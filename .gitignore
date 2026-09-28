@@ -1,0 +1,19 @@
+# build output
+/bin/
+*.exe
+*.test
+*.out
+
+# local configuration: holds the database password
+.env
+
+# editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# frontend (later stages)
+node_modules/
+dist/

@@ -1,0 +1,9 @@
+# Store text with LF in the repository; check out with the platform's line
+# endings. Migration checksums ignore CR, so a Windows checkout of a
+# migration still matches what was applied.
+* text=auto
+
+*.go    text eol=lf
+*.sql   text eol=lf
+*.sh    text eol=lf
+*.ps1   text eol=crlf
