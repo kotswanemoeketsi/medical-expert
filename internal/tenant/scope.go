@@ -27,6 +27,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/go-sql-driver/mysql"
+
 	"github.com/yourorg/medical-expert-system/internal/model"
 )
 
@@ -109,9 +111,13 @@ func (s *Scope) WithTx(tx *sql.Tx) *Scope {
 // already inside a transaction, fn joins it rather than starting a nested one,
 // so repository methods can use InTx without knowing whether their caller did.
 //
+// A transaction InnoDB chose as a deadlock victim is rolled back by the
+// server and retried here, up to three attempts in all, so fn may run more
+// than once and must only touch the database.
+//
 // This exists so that repositories never need the raw handle to begin a
 // transaction: the handle stays unexported and InTx is the only way in.
-func (s *Scope) InTx(ctx context.Context, fn func(tx *Scope) error) (err error) {
+func (s *Scope) InTx(ctx context.Context, fn func(tx *Scope) error) error {
 	if _, inTx := s.db.(*sql.Tx); inTx {
 		return fn(s)
 	}
@@ -119,6 +125,22 @@ func (s *Scope) InTx(ctx context.Context, fn func(tx *Scope) error) (err error) 
 	if !ok || root == nil {
 		return errors.New("tenant: scope has no database to begin a transaction on")
 	}
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err = s.runTx(ctx, root, fn); !isDeadlock(err) {
+			return err
+		}
+	}
+	return err
+}
+
+// isDeadlock reports InnoDB's "Deadlock found when trying to get lock".
+func isDeadlock(err error) bool {
+	var me *mysql.MySQLError
+	return errors.As(err, &me) && me.Number == 1213
+}
+
+func (s *Scope) runTx(ctx context.Context, root *sql.DB, fn func(tx *Scope) error) error {
 	tx, err := root.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("tenant: begin transaction: %w", err)

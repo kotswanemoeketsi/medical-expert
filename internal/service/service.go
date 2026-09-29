@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/yourorg/medical-expert-system/internal/ai"
 	"github.com/yourorg/medical-expert-system/internal/model"
 	"github.com/yourorg/medical-expert-system/internal/repository"
 	"github.com/yourorg/medical-expert-system/internal/secure"
@@ -33,6 +34,14 @@ type Config struct {
 	Lockout          time.Duration
 	RequireMFA       bool // BR-1.3
 	MFAIssuer        string
+
+	// AIDailyLimit caps note-drafting requests per practice per day
+	// (BR-5.18, NFR-12).
+	AIDailyLimit int
+	// DefaultReviewMonths applies to chronic patients with no interval of
+	// their own: a repeat prescription for a patient not seen in a signed
+	// note within it needs an override reason.
+	DefaultReviewMonths int
 }
 
 func (c Config) withDefaults() Config {
@@ -54,6 +63,12 @@ func (c Config) withDefaults() Config {
 	if c.MFAIssuer == "" {
 		c.MFAIssuer = "Medical Expert System"
 	}
+	if c.AIDailyLimit <= 0 {
+		c.AIDailyLimit = 200
+	}
+	if c.DefaultReviewMonths <= 0 {
+		c.DefaultReviewMonths = 6
+	}
 	return c
 }
 
@@ -63,6 +78,8 @@ type Deps struct {
 	Logger *slog.Logger
 	Hasher secure.Hasher
 	Config Config
+	// Drafter drafts consultation notes. Nil switches drafting off.
+	Drafter ai.Drafter
 	// Now is the clock; tests replace it. Defaults to UTC wall time.
 	Now func() time.Time
 }
@@ -76,6 +93,7 @@ type Registry struct {
 	clock     func() time.Time
 	platform  *repository.PlatformRepository
 	audit     *repository.AuditRepository
+	drafter   ai.Drafter
 	dummyHash string
 }
 
@@ -106,6 +124,7 @@ func NewRegistry(d Deps) (*Registry, error) {
 		clock:     d.Now,
 		platform:  repository.NewPlatformRepository(d.DB),
 		audit:     repository.NewAuditRepository(d.DB),
+		drafter:   d.Drafter,
 		dummyHash: dummy,
 	}, nil
 }
@@ -160,22 +179,32 @@ type Principal struct {
 // Services is the per-request, per-tenant set. There is no unscoped
 // service to reach for.
 type Services struct {
-	Session  *SessionService
-	MFA      *MFAService
-	Users    *UserService
-	Patients *PatientService
-	Audit    *AuditService
+	Session       *SessionService
+	MFA           *MFAService
+	Users         *UserService
+	Patients      *PatientService
+	Audit         *AuditService
+	Medication    *MedicationService
+	Encounters    *EncounterService
+	Prescriptions *PrescriptionService
+	Labs          *LabService
+	Documents     *DocumentService
 }
 
 // For builds services bound to one tenant and one actor.
 func (r *Registry) For(scope *tenant.Scope, actor Actor, state SessionState) *Services {
 	b := &base{reg: r, scope: scope, actor: actor, state: state}
 	return &Services{
-		Session:  &SessionService{base: b},
-		MFA:      &MFAService{base: b},
-		Users:    &UserService{base: b},
-		Patients: &PatientService{base: b},
-		Audit:    &AuditService{base: b},
+		Session:       &SessionService{base: b},
+		MFA:           &MFAService{base: b},
+		Users:         &UserService{base: b},
+		Patients:      &PatientService{base: b},
+		Audit:         &AuditService{base: b},
+		Medication:    &MedicationService{base: b},
+		Encounters:    &EncounterService{base: b},
+		Prescriptions: &PrescriptionService{base: b},
+		Labs:          &LabService{base: b},
+		Documents:     &DocumentService{base: b},
 	}
 }
 
@@ -223,6 +252,33 @@ func (r *Registry) Authenticate(ctx context.Context, token string, meta RequestM
 // Ping reports whether the database answers.
 func (r *Registry) Ping(ctx context.Context) error { return r.platform.Ping(ctx) }
 
+// ExpirePrescriptions marks lapsed scripts expired in every active
+// practice, one practice at a time. A convenience for listings: repeats
+// check the date themselves, so a missed run cannot cause harm.
+func (r *Registry) ExpirePrescriptions(ctx context.Context) (int64, error) {
+	ids, err := r.platform.ActiveTenantIDs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	today := model.DateOf(r.now().In(johannesburg))
+	var total int64
+	for _, id := range ids {
+		scope, err := tenant.NewScope(r.db, id)
+		if err != nil {
+			return total, err
+		}
+		n, err := repository.NewPrescriptionRepository(scope).ExpireBefore(ctx, today)
+		if err != nil {
+			return total, fmt.Errorf("tenant %s: %w", id, err)
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// DraftingEnabled reports whether a note drafter is configured.
+func (r *Registry) DraftingEnabled() bool { return r.drafter != nil }
+
 // PurgeSessions deletes sessions that ended more than a week ago.
 func (r *Registry) PurgeSessions(ctx context.Context) (int64, error) {
 	return r.platform.PurgeSessions(ctx, r.now().Add(-7*24*time.Hour))
@@ -244,6 +300,58 @@ func (b *base) sessions() *repository.SessionRepository {
 }
 func (b *base) patients() *repository.PatientRepository {
 	return repository.NewPatientRepository(b.scope)
+}
+func (b *base) regimens() *repository.RegimenRepository {
+	return repository.NewRegimenRepository(b.scope)
+}
+func (b *base) encounters() *repository.EncounterRepository {
+	return repository.NewEncounterRepository(b.scope)
+}
+func (b *base) prescriptions() *repository.PrescriptionRepository {
+	return repository.NewPrescriptionRepository(b.scope)
+}
+func (b *base) labs() *repository.LabRepository { return repository.NewLabRepository(b.scope) }
+func (b *base) documents() *repository.DocumentRepository {
+	return repository.NewDocumentRepository(b.scope)
+}
+
+// isOwnPatient reports whether the actor is the patient with this record.
+func (b *base) isOwnPatient(id model.ID) bool {
+	return b.actor.Role == model.RolePatient && b.actor.PatientID != nil && *b.actor.PatientID == id
+}
+
+// canSeePatientClinical allows clinicians, and a patient for their own
+// record. Anyone else gets not-found, never forbidden.
+func (b *base) canSeePatientClinical(ctx context.Context, id model.ID) error {
+	if b.actor.Role.IsClinical() || b.isOwnPatient(id) {
+		return nil
+	}
+	if b.actor.Role == model.RoleClinicAdmin {
+		return ErrForbidden
+	}
+	b.recordWrite(ctx, model.AuditEntry{Action: model.ActionPatientAccessDenied, Outcome: model.OutcomeDenied,
+		SubjectType: "patient", SubjectID: idp(id)})
+	return ErrNotFound
+}
+
+// requirePatientExists returns not-found for a patient outside this
+// practice, before any list query can answer with an empty list instead.
+func (b *base) requirePatientExists(ctx context.Context, id model.ID) error {
+	ok, err := b.patients().Exists(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// readAudited records a read of patient data; if the record cannot be
+// written, the data is not returned.
+func (b *base) readAudited(ctx context.Context, action, subjectType string, subjectID model.ID, meta map[string]any) error {
+	return b.record(ctx, model.AuditEntry{Action: action, Outcome: model.OutcomeSuccess,
+		SubjectType: subjectType, SubjectID: idp(subjectID), Metadata: meta})
 }
 
 // record writes an audit entry attributed to the actor. It returns the error
@@ -292,6 +400,13 @@ func (b *base) requireStaff() error {
 func (b *base) requireClinical() error {
 	if !b.actor.Role.IsClinical() {
 		return ErrForbidden
+	}
+	return nil
+}
+
+func (b *base) requireDoctor() error {
+	if b.actor.Role != model.RoleDoctor {
+		return ErrDoctorOnly
 	}
 	return nil
 }

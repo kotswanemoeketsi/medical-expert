@@ -178,6 +178,35 @@ func TestDecodeIsStrict(t *testing.T) {
 	}
 }
 
+func TestDecodeOptionalAcceptsNoBodyWhateverItsLabel(t *testing.T) {
+	var dst struct {
+		Reason string `json:"reason"`
+	}
+	// PowerShell's Invoke-RestMethod sends a bodiless POST as a form.
+	r := httptest.NewRequest("POST", "/", strings.NewReader(""))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := decodeOptional(r, &dst); err != nil {
+		t.Errorf("empty form-labelled body rejected: %v", err)
+	}
+	// A form that does carry a body is still refused.
+	r = httptest.NewRequest("POST", "/", strings.NewReader("reason=x"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := decodeOptional(r, &dst); err == nil {
+		t.Error("form body accepted")
+	}
+	// A JSON body still arrives in full after the peek.
+	r = httptest.NewRequest("POST", "/", strings.NewReader(`{"reason":"duplicate"}`))
+	r.Header.Set("Content-Type", "application/json")
+	if err := decodeOptional(r, &dst); err != nil || dst.Reason != "duplicate" {
+		t.Errorf("JSON body: %q, %v", dst.Reason, err)
+	}
+	// Strictness is unchanged.
+	r = httptest.NewRequest("POST", "/", strings.NewReader(`{"reasno":"x"}`))
+	if err := decodeOptional(r, &dst); err == nil || !strings.Contains(err.Error(), "Unknown field") {
+		t.Errorf("misspelt field: %v", err)
+	}
+}
+
 func TestEveryRouteIsGatedOrDeliberatelyPublic(t *testing.T) {
 	a := New(nil, nil, Options{})
 	public := map[string]bool{"GET /healthz": true, "POST /api/v1/auth/login": true}

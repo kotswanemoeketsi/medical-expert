@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yourorg/medical-expert-system/internal/ai"
 	"github.com/yourorg/medical-expert-system/internal/db"
 	"github.com/yourorg/medical-expert-system/internal/model"
 	"github.com/yourorg/medical-expert-system/internal/secure"
@@ -46,6 +47,8 @@ type harness struct {
 type harnessOpts struct {
 	requireMFA     bool
 	loginPerMinute int
+	drafter        ai.Drafter
+	aiDailyLimit   int
 }
 
 func newHarness(t *testing.T, o harnessOpts) *harness {
@@ -66,8 +69,8 @@ func newHarness(t *testing.T, o harnessOpts) *harness {
 	clk := &clock{t: time.Now().UTC().Truncate(time.Second)}
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg, err := service.NewRegistry(service.Deps{
-		DB: conn, Logger: quiet, Hasher: &secure.PBKDF2Hasher{Iterations: 1000},
-		Config: service.Config{RequireMFA: o.requireMFA}, Now: clk.Now,
+		DB: conn, Logger: quiet, Hasher: &secure.PBKDF2Hasher{Iterations: 1000}, Drafter: o.drafter,
+		Config: service.Config{RequireMFA: o.requireMFA, AIDailyLimit: o.aiDailyLimit}, Now: clk.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -382,7 +385,7 @@ func TestPasswordAloneIsNotEnoughOnceMFAIsOn(t *testing.T) {
 			continue
 		}
 		path := rt.Path
-		for _, param := range []string{"{id}", "{allergyId}", "{conditionId}"} {
+		for _, param := range []string{"{id}", "{allergyId}", "{conditionId}", "{draftId}"} {
 			path = strings.ReplaceAll(path, param, someID)
 		}
 		var body any

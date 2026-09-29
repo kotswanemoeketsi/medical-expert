@@ -35,6 +35,15 @@ func TestNormalizeE164(t *testing.T) {
 	}
 }
 
+func TestDisplay(t *testing.T) {
+	if got := Display("+27335550199"); got != "033 555 0199" {
+		t.Errorf("got %q", got)
+	}
+	if got := Display("+263771234567"); got != "+263771234567" {
+		t.Errorf("foreign numbers should stay international, got %q", got)
+	}
+}
+
 func TestLooksLikeNumber(t *testing.T) {
 	if !LooksLikeNumber("082 123 4567") || !LooksLikeNumber("+27821234567") {
 		t.Error("numbers not recognised")

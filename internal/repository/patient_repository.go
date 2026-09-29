@@ -416,3 +416,17 @@ func (r *PatientRepository) ConsentState(ctx context.Context, patientID model.ID
 	}
 	return state, nil
 }
+
+const countActiveChronic = `
+SELECT COUNT(*) FROM patient_conditions
+ WHERE tenant_id = :tenant AND patient_id = ? AND is_chronic = 1 AND status = 'active'`
+
+// HasActiveChronicCondition reports whether a patient is on the chronic
+// register: at least one active condition a clinician marked chronic.
+func (r *PatientRepository) HasActiveChronicCondition(ctx context.Context, patientID model.ID) (bool, error) {
+	var n int
+	if err := r.scope.QueryRow(ctx, countActiveChronic, patientID.Bytes()).Scan(&n); err != nil {
+		return false, translate(err)
+	}
+	return n > 0, nil
+}

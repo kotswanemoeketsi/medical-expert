@@ -5,6 +5,7 @@
 package controller
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yourorg/medical-expert-system/internal/model"
 	"github.com/yourorg/medical-expert-system/internal/service"
@@ -131,6 +133,8 @@ func statusFor(k service.Kind) int {
 		return http.StatusConflict
 	case service.KindUnavailable:
 		return http.StatusServiceUnavailable
+	case service.KindLimited:
+		return http.StatusTooManyRequests
 	}
 	return http.StatusInternalServerError
 }
@@ -173,6 +177,43 @@ func decode(r *http.Request, dst any) error {
 		return &badRequest{"The request body must contain a single JSON object."}
 	}
 	return nil
+}
+
+// decodeOptional is decode for endpoints whose body may be left out
+// entirely, such as a cancellation with no reason. A request with no body at
+// all is accepted whatever its Content-Type says: PowerShell, for one, labels
+// a POST without a body as a form.
+func decodeOptional(r *http.Request, dst any) error {
+	body := bufio.NewReader(r.Body)
+	if _, err := body.Peek(1); errors.Is(err, io.EOF) {
+		return nil
+	}
+	r.Body = readCloser{body, r.Body}
+	err := decode(r, dst)
+	var br *badRequest
+	if errors.As(err, &br) && br.msg == "The request body is empty." {
+		return nil
+	}
+	return err
+}
+
+type readCloser struct {
+	io.Reader
+	io.Closer
+}
+
+// queryTime reads an RFC 3339 timestamp from the query string.
+func queryTime(r *http.Request, name string) (time.Time, error) {
+	s := r.URL.Query().Get(name)
+	if s == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, &service.Error{Kind: service.KindInvalid, Code: "validation_failed", Message: "Some fields need attention.",
+			Fields: []model.FieldError{{Field: name, Message: "must be an RFC 3339 timestamp, e.g. 2026-09-28T08:00:00+02:00"}}}
+	}
+	return t, nil
 }
 
 // pathID reads an identifier from the path. Something that is not an ID

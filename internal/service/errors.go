@@ -19,6 +19,7 @@ const (
 	KindNotFound                        // does not exist, or not visible to this caller
 	KindConflict                        // the record is not in a state that allows this
 	KindUnavailable                     // a dependency is switched off or unreachable
+	KindLimited                         // a usage limit has been reached; try later
 )
 
 // Error is the one error type services return to callers.
@@ -74,6 +75,45 @@ var (
 		Message: "A patient with this ID number is already registered at this practice."}
 	ErrSlugTaken = &Error{Kind: KindConflict, Code: "slug_taken",
 		Message: "That practice code is already in use."}
+
+	ErrDoctorOnly = &Error{Kind: KindForbidden, Code: "doctor_only",
+		Message: "Only a doctor can do this."}
+
+	ErrNotAuthor = &Error{Kind: KindForbidden, Code: "not_author",
+		Message: "Only the clinician who wrote this note can do that."}
+	ErrNoteSigned = &Error{Kind: KindConflict, Code: "note_state",
+		Message: "This note is signed and can no longer be edited. Record a correction as an amendment."}
+	ErrNoteNotSigned = &Error{Kind: KindConflict, Code: "note_state",
+		Message: "Only a signed note is amended. Edit the draft instead."}
+
+	ErrAIUnavailable = &Error{Kind: KindUnavailable, Code: "ai_unavailable",
+		Message: "Note drafting is not switched on for this installation."}
+	ErrAIConsentRequired = &Error{Kind: KindConflict, Code: "ai_consent_required",
+		Message: "The patient has not consented to AI-assisted review of their record. Record their consent first, or write the note without drafting."}
+	ErrAILimitReached = &Error{Kind: KindLimited, Code: "ai_limit_reached",
+		Message: "The practice has reached today's limit for note drafting."}
+	ErrAIFailed = &Error{Kind: KindUnavailable, Code: "ai_failed",
+		Message: "The drafting service could not produce a draft. Your dictation was kept; try again, or write the note directly."}
+
+	ErrNotChronic = &Error{Kind: KindConflict, Code: "not_chronic",
+		Message: "Repeat prescriptions are for patients with an active chronic condition. Record the condition first."}
+	ErrRepeatsExhausted = &Error{Kind: KindConflict, Code: "repeats_exhausted",
+		Message: "Every authorised repeat of this prescription has been issued."}
+	ErrPrescriptionExpired = &Error{Kind: KindConflict, Code: "prescription_expired",
+		Message: "This prescription has expired."}
+	ErrPrescriptionCancelled = &Error{Kind: KindConflict, Code: "prescription_cancelled",
+		Message: "This prescription was cancelled."}
+
+	ErrRegimenState = &Error{Kind: KindConflict, Code: "regimen_state",
+		Message: "That change is not possible from the regimen's current status."}
+	ErrDoseState = &Error{Kind: KindConflict, Code: "dose_state",
+		Message: "This dose has already been answered, or its response window has closed."}
+	ErrAlreadyAcknowledged = &Error{Kind: KindConflict, Code: "already_acknowledged",
+		Message: "This result has already been acknowledged."}
+	ErrDocumentState = &Error{Kind: KindConflict, Code: "document_state",
+		Message: "That is not possible from the document's current status."}
+	ErrDraftAlreadyFlagged = &Error{Kind: KindConflict, Code: "already_flagged",
+		Message: "This draft has already been flagged for review."}
 )
 
 func invalid(v model.ValidationErrors) error {

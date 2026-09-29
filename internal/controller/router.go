@@ -19,6 +19,7 @@ var (
 	adminRoles     = []model.Role{model.RoleClinicAdmin}
 	staffOrPatient = []model.Role{model.RoleClinicAdmin, model.RoleDoctor, model.RoleNurse, model.RolePatient}
 	clinicalOrSelf = []model.Role{model.RoleDoctor, model.RoleNurse, model.RolePatient}
+	doctorRoles    = []model.Role{model.RoleDoctor}
 )
 
 // Route describes one endpoint. Exported so tests can walk every route.
@@ -67,6 +68,48 @@ func (a *API) Routes() []Route {
 		{Method: "POST", Path: "/api/v1/patients/{id}/consents", Roles: staffRoles, handler: a.recordConsent},
 		{Method: "GET", Path: "/api/v1/patients/{id}/consents", Roles: staffOrPatient, handler: a.listConsents},
 		{Method: "PATCH", Path: "/api/v1/patients/{id}/review-interval", Roles: clinicalRoles, handler: a.setReviewInterval},
+
+		// Medication catalogue, regimens and doses
+		{Method: "GET", Path: "/api/v1/medications", Roles: staffRoles, handler: a.searchMedications},
+		{Method: "POST", Path: "/api/v1/patients/{id}/regimens", Roles: doctorRoles, handler: a.createRegimen},
+		{Method: "GET", Path: "/api/v1/patients/{id}/regimens", Roles: clinicalOrSelf, handler: a.listRegimens},
+		{Method: "POST", Path: "/api/v1/regimens/{id}/status", Roles: doctorRoles, handler: a.setRegimenStatus},
+		{Method: "POST", Path: "/api/v1/regimens/{id}/doses", Roles: clinicalRoles, handler: a.scheduleDoses},
+		{Method: "GET", Path: "/api/v1/patients/{id}/doses", Roles: clinicalOrSelf, handler: a.listDoses},
+		{Method: "POST", Path: "/api/v1/doses/{id}/response", Roles: clinicalOrSelf, handler: a.respondToDose},
+
+		// Consultation notes and AI drafting
+		{Method: "POST", Path: "/api/v1/patients/{id}/encounters", Roles: clinicalRoles, handler: a.createEncounter},
+		{Method: "GET", Path: "/api/v1/patients/{id}/encounters", Roles: clinicalOrSelf, handler: a.listEncounters},
+		{Method: "GET", Path: "/api/v1/encounters/{id}", Roles: clinicalRoles, handler: a.getEncounter},
+		{Method: "PATCH", Path: "/api/v1/encounters/{id}", Roles: clinicalRoles, handler: a.updateEncounter},
+		{Method: "POST", Path: "/api/v1/encounters/{id}/sign", Roles: clinicalRoles, handler: a.signEncounter},
+		{Method: "POST", Path: "/api/v1/encounters/{id}/amendments", Roles: clinicalRoles, handler: a.amendEncounter},
+		{Method: "POST", Path: "/api/v1/encounters/{id}/draft-note", Roles: clinicalRoles, handler: a.draftNote},
+		{Method: "GET", Path: "/api/v1/encounters/{id}/drafts", Roles: clinicalRoles, handler: a.listDrafts},
+		{Method: "POST", Path: "/api/v1/encounters/{id}/drafts/{draftId}/flag", Roles: clinicalRoles, handler: a.flagDraft},
+
+		// Prescriptions
+		{Method: "POST", Path: "/api/v1/patients/{id}/prescriptions", Roles: doctorRoles, handler: a.issuePrescription},
+		{Method: "GET", Path: "/api/v1/patients/{id}/prescriptions", Roles: clinicalRoles, handler: a.listPrescriptions},
+		{Method: "GET", Path: "/api/v1/prescriptions/{id}", Roles: clinicalRoles, handler: a.getPrescription},
+		{Method: "POST", Path: "/api/v1/prescriptions/{id}/repeat", Roles: doctorRoles, handler: a.repeatPrescription},
+		{Method: "POST", Path: "/api/v1/prescriptions/{id}/cancel", Roles: doctorRoles, handler: a.cancelPrescription},
+
+		// Laboratory results
+		{Method: "POST", Path: "/api/v1/patients/{id}/lab-results", Roles: clinicalRoles, handler: a.recordLabResult},
+		{Method: "GET", Path: "/api/v1/patients/{id}/lab-results", Roles: clinicalRoles, handler: a.listPatientLabResults},
+		{Method: "GET", Path: "/api/v1/lab-results", Roles: clinicalRoles, handler: a.labInbox},
+		{Method: "GET", Path: "/api/v1/lab-results/{id}", Roles: clinicalRoles, handler: a.getLabResult},
+		{Method: "POST", Path: "/api/v1/lab-results/{id}/acknowledge", Roles: clinicalRoles, handler: a.acknowledgeLabResult},
+
+		// Referral letters and medical certificates
+		{Method: "POST", Path: "/api/v1/patients/{id}/referrals", Roles: clinicalRoles, handler: a.createReferral},
+		{Method: "POST", Path: "/api/v1/patients/{id}/sick-notes", Roles: clinicalRoles, handler: a.createSickNote},
+		{Method: "GET", Path: "/api/v1/patients/{id}/documents", Roles: clinicalRoles, handler: a.listDocuments},
+		{Method: "GET", Path: "/api/v1/documents/{id}", Roles: clinicalRoles, handler: a.getDocument},
+		{Method: "POST", Path: "/api/v1/documents/{id}/issue", Roles: doctorRoles, handler: a.issueDocument},
+		{Method: "POST", Path: "/api/v1/documents/{id}/cancel", Roles: clinicalRoles, handler: a.cancelDocument},
 	}
 }
 

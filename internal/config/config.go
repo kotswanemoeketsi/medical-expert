@@ -40,6 +40,15 @@ type Config struct {
 	DBMaxIdle     int
 	DBConnMaxLife time.Duration
 	DBConnMaxIdle time.Duration
+
+	// Note drafting. An empty key switches it off.
+	AnthropicAPIKey string
+	AIModel         string
+	AIBaseURL       string
+	AITimeout       time.Duration
+	AIDailyLimit    int
+
+	DefaultReviewMonths int
 }
 
 func (c *Config) Production() bool { return c.Env == "production" }
@@ -75,6 +84,12 @@ func Load() (*Config, error) {
 	c.DBMaxIdle = integer("MES_DB_MAX_IDLE", 10, &errs)
 	c.DBConnMaxLife = duration("MES_DB_CONN_MAX_LIFE", 5*time.Minute, &errs)
 	c.DBConnMaxIdle = duration("MES_DB_CONN_MAX_IDLE", 2*time.Minute, &errs)
+	c.AnthropicAPIKey = os.Getenv("ANTHROPIC_API_KEY")
+	c.AIModel = get("MES_AI_MODEL", "")
+	c.AIBaseURL = get("MES_AI_BASE_URL", "https://api.anthropic.com")
+	c.AITimeout = duration("MES_AI_TIMEOUT", 90*time.Second, &errs)
+	c.AIDailyLimit = integer("MES_AI_DAILY_LIMIT", 200, &errs)
+	c.DefaultReviewMonths = integer("MES_DEFAULT_REVIEW_MONTHS", 6, &errs)
 
 	switch strings.ToLower(get("MES_LOG_LEVEL", "info")) {
 	case "debug":
@@ -100,6 +115,12 @@ func Load() (*Config, error) {
 	if c.SessionIdle > c.SessionMax {
 		errs = append(errs, "MES_SESSION_IDLE cannot exceed MES_SESSION_MAX")
 	}
+	if c.AIDailyLimit < 1 {
+		errs = append(errs, "MES_AI_DAILY_LIMIT must be at least 1")
+	}
+	if c.DefaultReviewMonths < 1 || c.DefaultReviewMonths > 24 {
+		errs = append(errs, "MES_DEFAULT_REVIEW_MONTHS must be between 1 and 24")
+	}
 	if len(errs) > 0 {
 		return nil, errors.New("configuration: " + strings.Join(errs, "; "))
 	}
@@ -122,6 +143,9 @@ func (c *Config) Validate() error {
 	}
 	if c.SessionIdle > time.Hour {
 		errs = append(errs, "MES_SESSION_IDLE must not exceed 1h in production (BR-1.8)")
+	}
+	if c.AnthropicAPIKey != "" && !strings.HasPrefix(c.AIBaseURL, "https://") {
+		errs = append(errs, "MES_AI_BASE_URL must use https in production: dictations are patient data")
 	}
 	if cfg, err := mysql.ParseDSN(c.DSN); err == nil && strings.EqualFold(cfg.User, "root") {
 		errs = append(errs, "MES_DSN must not use the root account in production; create an application user")

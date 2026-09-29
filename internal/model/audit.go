@@ -50,6 +50,41 @@ const (
 	ActionReviewIntervalSet   = "patient.review_interval_set"
 
 	ActionAuditRead = "audit.read"
+
+	ActionRegimenCreated       = "regimen.created"
+	ActionRegimenStatusChanged = "regimen.status_changed"
+	ActionRegimensRead         = "regimen.read"
+	ActionDosesScheduled       = "dose.scheduled"
+	ActionDoseResponded        = "dose.responded"
+	ActionDosesRead            = "dose.read"
+
+	ActionEncounterCreated = "encounter.created"
+	ActionEncounterUpdated = "encounter.updated"
+	ActionEncounterSigned  = "encounter.signed"
+	ActionEncounterAmended = "encounter.amended"
+	ActionEncounterRead    = "encounter.read"
+	ActionEncountersListed = "encounter.listed"
+
+	ActionAIDraftGenerated = "ai.draft_generated"
+	ActionAIDraftFailed    = "ai.draft_failed"
+	ActionAIDraftRefused   = "ai.draft_refused"
+	ActionAIDraftFlagged   = "ai.draft_flagged"
+	ActionAIDraftsRead     = "ai.drafts_read"
+
+	ActionPrescriptionIssued    = "prescription.issued"
+	ActionPrescriptionRepeated  = "prescription.repeated"
+	ActionPrescriptionCancelled = "prescription.cancelled"
+	ActionPrescriptionRead      = "prescription.read"
+
+	ActionLabRecorded     = "lab.recorded"
+	ActionLabRead         = "lab.read"
+	ActionLabInboxRead    = "lab.inbox_read"
+	ActionLabAcknowledged = "lab.acknowledged"
+
+	ActionDocumentDrafted   = "document.drafted"
+	ActionDocumentIssued    = "document.issued"
+	ActionDocumentCancelled = "document.cancelled"
+	ActionDocumentRead      = "document.read"
 )
 
 // AuditEntry is one row of the audit log (BR-8.1, BR-8.2).

@@ -428,13 +428,20 @@ func (s ConsentState) Statuses() []ConsentStatus {
 	return out
 }
 
-// PatientSummary is the consolidated view (BR-2.9). Later modules add to it.
+// PatientSummary is the consolidated view (BR-2.9).
 type PatientSummary struct {
-	Patient    Patient         `json:"patient"`
-	AgeYears   int             `json:"age_years"`
-	Allergies  []Allergy       `json:"allergies"`
-	Conditions []Condition     `json:"conditions"`
-	Consents   []ConsentStatus `json:"consents"`
+	Patient          Patient         `json:"patient"`
+	AgeYears         int             `json:"age_years"`
+	Allergies        []Allergy       `json:"allergies"`
+	Conditions       []Condition     `json:"conditions"`
+	Consents         []ConsentStatus `json:"consents"`
+	Medications      []Regimen       `json:"medications"`
+	RecentEncounters []Encounter     `json:"recent_encounters"`
+	// OpenDraftNotes counts consultation notes started but not signed.
+	OpenDraftNotes int `json:"open_draft_notes"`
+	// UnacknowledgedAbnormalResults counts abnormal lab results no clinician
+	// has acknowledged yet.
+	UnacknowledgedAbnormalResults int `json:"unacknowledged_abnormal_results"`
 }
 
 // ---------------------------------------------------------------------------

@@ -167,3 +167,96 @@ func (r *PlatformRepository) PurgeSessions(ctx context.Context, cutoff time.Time
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Shared reference data: the medication catalogue (BR-0.10). Not tenant data
+// — every practice reads the same list — so it lives with the other
+// platform-level statements. Tenant-scoped statements may still join it.
+// ---------------------------------------------------------------------------
+
+const medicationColumns = `id, generic_name, brand_name, strength, dosage_form, route, schedule, nappi_code, pack_size, is_active`
+
+func scanMedication(sc scanner) (*model.Medication, error) {
+	var m model.Medication
+	var schedule, nappi, pack sql.Null[string]
+	if err := sc.Scan(&m.ID, &m.GenericName, &m.BrandName, &m.Strength, &m.DosageForm, &m.Route,
+		&schedule, &nappi, &pack, &m.IsActive); err != nil {
+		return nil, translate(err)
+	}
+	m.Schedule, m.NAPPICode, m.PackSize = schedule.V, nappi.V, pack.V
+	return &m, nil
+}
+
+const selectMedicationByID = `SELECT ` + medicationColumns + ` FROM medications WHERE id = ?`
+
+func (r *PlatformRepository) MedicationByID(ctx context.Context, id model.ID) (*model.Medication, error) {
+	return scanMedication(r.db.QueryRowContext(ctx, selectMedicationByID, id.Bytes()))
+}
+
+// Strengths sort by their leading number, so 5 mg comes before 10 mg; the
+// text breaks ties ("120 mg/5 ml" and "120 mg/ml").
+const listMedications = `
+SELECT ` + medicationColumns + ` FROM medications
+ WHERE is_active = 1
+ ORDER BY generic_name, brand_name, CAST(strength AS DECIMAL(12,4)), strength, dosage_form
+ LIMIT ? OFFSET ?`
+
+const searchMedications = `
+SELECT ` + medicationColumns + ` FROM medications
+ WHERE is_active = 1 AND (generic_name LIKE ? OR brand_name LIKE ? OR nappi_code = ?)
+ ORDER BY generic_name, brand_name, CAST(strength AS DECIMAL(12,4)), strength, dosage_form
+ LIMIT ? OFFSET ?`
+
+// SearchMedications finds catalogue entries by generic or brand name prefix
+// or exact NAPPI code. An empty query lists.
+func (r *PlatformRepository) SearchMedications(ctx context.Context, q string, limit, offset int) ([]model.Medication, error) {
+	var rows *sql.Rows
+	var err error
+	if q == "" {
+		rows, err = r.db.QueryContext(ctx, listMedications, limit, offset)
+	} else {
+		like := likePrefix(q)
+		rows, err = r.db.QueryContext(ctx, searchMedications, like, like, q, limit, offset)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.Medication{}
+	for rows.Next() {
+		m, err := scanMedication(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+// A catalogue row is identified by its product key; importing the same
+// product again updates its details rather than duplicating it.
+const upsertMedication = `
+INSERT INTO medications (id, generic_name, brand_name, strength, dosage_form, route, schedule, nappi_code,
+                         pack_size, is_active, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE route = VALUES(route), schedule = VALUES(schedule), nappi_code = VALUES(nappi_code),
+                        pack_size = VALUES(pack_size), is_active = VALUES(is_active), updated_at = VALUES(updated_at)`
+
+const countMedicationByID = `SELECT COUNT(*) FROM medications WHERE id = ?`
+
+// UpsertMedication adds or updates a catalogue entry. It reports whether a
+// new row was inserted.
+func (r *PlatformRepository) UpsertMedication(ctx context.Context, m *model.Medication, now time.Time) (bool, error) {
+	if _, err := r.db.ExecContext(ctx, upsertMedication, m.ID.Bytes(), m.GenericName, m.BrandName, m.Strength,
+		m.DosageForm, string(m.Route), nullString(m.Schedule), nullString(m.NAPPICode), nullString(m.PackSize),
+		m.IsActive, now.UTC(), now.UTC()); err != nil {
+		return false, translate(err)
+	}
+	// The affected-row count cannot tell an insert from an unchanged update
+	// under clientFoundRows, but only an insert stores the ID we generated.
+	var n int
+	if err := r.db.QueryRowContext(ctx, countMedicationByID, m.ID.Bytes()).Scan(&n); err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}

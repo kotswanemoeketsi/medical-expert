@@ -60,6 +60,17 @@ func NormalizeE164(raw string) (string, error) {
 	return "+" + d, nil
 }
 
+// Display formats a stored E.164 number for print. South African numbers are
+// shown the way South Africans write them (033 555 0199); others are left
+// in international form.
+func Display(e164 string) string {
+	if strings.HasPrefix(e164, "+27") && len(e164) == 12 {
+		n := "0" + e164[3:]
+		return n[:3] + " " + n[3:6] + " " + n[6:]
+	}
+	return e164
+}
+
 // LooksLikeNumber reports whether a search term is probably a phone number
 // rather than a name, so a search can match on the normalised form.
 func LooksLikeNumber(s string) bool {

@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yourorg/medical-expert-system/internal/ai"
 	"github.com/yourorg/medical-expert-system/internal/config"
 	"github.com/yourorg/medical-expert-system/internal/controller"
 	"github.com/yourorg/medical-expert-system/internal/db"
@@ -72,12 +73,24 @@ func run() error {
 		logger.Info("migrations applied", "count", len(applied))
 	}
 
+	var drafter ai.Drafter
+	if cfg.AnthropicAPIKey != "" {
+		client, err := ai.New(ai.Config{APIKey: cfg.AnthropicAPIKey, Model: cfg.AIModel, BaseURL: cfg.AIBaseURL, Timeout: cfg.AITimeout})
+		if err != nil {
+			return err
+		}
+		drafter = client
+		logger.Info("note drafting enabled", "model", client.Model(), "daily_limit_per_practice", cfg.AIDailyLimit)
+	} else {
+		logger.Info("note drafting disabled: ANTHROPIC_API_KEY is not set")
+	}
+
 	reg, err := service.NewRegistry(service.Deps{
-		DB: conn, Logger: logger,
+		DB: conn, Logger: logger, Drafter: drafter,
 		Config: service.Config{
 			SessionIdle: cfg.SessionIdle, SessionMax: cfg.SessionMax, MFAChallengeTTL: cfg.MFAChallengeTTL,
 			MaxLoginAttempts: cfg.MaxLoginAttempts, Lockout: cfg.Lockout, RequireMFA: cfg.RequireMFA,
-			MFAIssuer: cfg.MFAIssuer,
+			MFAIssuer: cfg.MFAIssuer, AIDailyLimit: cfg.AIDailyLimit, DefaultReviewMonths: cfg.DefaultReviewMonths,
 		},
 	})
 	if err != nil {
@@ -92,6 +105,10 @@ func run() error {
 			n, err := reg.PurgeSessions(ctx)
 			return fmt.Sprintf("%d removed", n), err
 		}},
+		{Name: "expire_prescriptions", Run: func(ctx context.Context) (string, error) {
+			n, err := reg.ExpirePrescriptions(ctx)
+			return fmt.Sprintf("%d expired", n), err
+		}},
 	}}).Start(ctx)
 
 	srv := &http.Server{
@@ -99,10 +116,11 @@ func run() error {
 		Handler:           api.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    64 << 10,
-		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
+		// Long enough for a note draft, which waits on the model provider.
+		WriteTimeout:   150 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 64 << 10,
+		ErrorLog:       slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()

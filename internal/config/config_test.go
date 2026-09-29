@@ -58,6 +58,7 @@ func TestProductionRefusesWeakSettings(t *testing.T) {
 		"long session":         {"MES_SESSION_MAX": "48h"},
 		"long idle":            {"MES_SESSION_IDLE": "2h", "MES_SESSION_MAX": "12h"},
 		"root database access": {"MES_DSN": "root:pw@tcp(db:3306)/mes"},
+		"AI over plain http":   {"ANTHROPIC_API_KEY": "k", "MES_AI_BASE_URL": "http://proxy.local"},
 	}
 	for name, vars := range cases {
 		t.Run(name, func(t *testing.T) {

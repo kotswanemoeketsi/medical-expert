@@ -428,13 +428,32 @@ func (s *PatientService) Summary(ctx context.Context, id model.ID) (*model.Patie
 	if err != nil {
 		return nil, err
 	}
-	if err := s.record(ctx, model.AuditEntry{Action: model.ActionPatientSummaryRead, Outcome: model.OutcomeSuccess,
-		SubjectType: "patient", SubjectID: idp(id)}); err != nil {
+	medications, err := s.regimens().Current(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	// Recent notes are signed notes: an unfinished draft is not yet part of
+	// the record. Clinicians see how many drafts are open instead.
+	recent, err := s.encounters().ForPatient(ctx, id, true, 5)
+	if err != nil {
 		return nil, err
 	}
 	sum := &model.PatientSummary{
 		Patient: *p, AgeYears: p.AgeAt(s.now()),
 		Allergies: []model.Allergy{}, Conditions: []model.Condition{}, Consents: consents.Statuses(),
+		Medications: medications, RecentEncounters: recent,
+	}
+	if s.actor.Role.IsClinical() {
+		if sum.OpenDraftNotes, err = s.encounters().OpenDrafts(ctx, id); err != nil {
+			return nil, err
+		}
+		if sum.UnacknowledgedAbnormalResults, err = s.labs().UnacknowledgedAbnormal(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.record(ctx, model.AuditEntry{Action: model.ActionPatientSummaryRead, Outcome: model.OutcomeSuccess,
+		SubjectType: "patient", SubjectID: idp(id)}); err != nil {
+		return nil, err
 	}
 	for _, a := range allergies {
 		if a.Status != model.ClinicalEnteredInError {

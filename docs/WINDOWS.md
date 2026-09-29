@@ -53,7 +53,8 @@ MES_DSN=mes:your-password@tcp(127.0.0.1:3306)/mes
 ```
 
 The commands read `.env` from the folder they are run in, so there is no need
-to set environment variables by hand.
+to set environment variables by hand. Leave `ANTHROPIC_API_KEY` empty for now;
+section 8 covers note drafting.
 
 ## 5. Create the schema, a practice, and run
 
@@ -80,6 +81,40 @@ The same steps through the helper script:
 The server listens on http://localhost:8080. Check it with
 `Invoke-RestMethod http://localhost:8080/healthz`.
 
+### Upgrading from stage 1
+
+Stop the server, then:
+
+```powershell
+go run ./cmd/migrate
+```
+
+This applies migrations 0002 to 0005 (medication catalogue, notes,
+prescriptions, lab results, documents). Practices, users and patients are
+left as they were. While `MES_AUTO_MIGRATE` is on, which it is by default
+outside production, starting the server does the same.
+
+### Adding medicines to the catalogue
+
+The catalogue is shared by every practice. It starts with 32 common chronic
+and acute medicines. Load more from a CSV file with a header row:
+
+```powershell
+@'
+generic_name,brand_name,strength,dosage_form,route,schedule,nappi_code,pack_size
+Losartan,,50 mg,tablet,oral,S3,,28
+Indapamide,,1.5 mg,tablet,oral,S3,,30
+'@ | Set-Content -Encoding UTF8 medicines.csv
+
+go run ./cmd/catalogue -import medicines.csv
+```
+
+It prints `catalogue import: 2 added, 0 updated, 0 rejected`. Rejected rows
+are listed with the line number and the field at fault. Importing the same
+product again (same generic name, brand, strength and form) updates it
+instead of adding a copy. A file saved from Excel works, whether its columns
+are separated by commas or by semicolons.
+
 ## 6. Try the API
 
 In Windows PowerShell 5.1, `curl` is an alias for `Invoke-WebRequest`, not
@@ -90,9 +125,13 @@ Windows 10 and later).
 $base = 'http://localhost:8080/api/v1'
 function Api($method, $path, $body) {
     $req = @{ Method = $method; Uri = "$base$path"; Headers = $script:auth }
-    if ($body) { $req.ContentType = 'application/json'; $req.Body = ($body | ConvertTo-Json -Depth 5) }
+    if ($body) {
+        # Sent as UTF-8 bytes: PowerShell 5.1 would otherwise garble names such as Zoë
+        $req.ContentType = 'application/json; charset=utf-8'
+        $req.Body = [Text.Encoding]::UTF8.GetBytes(($body | ConvertTo-Json -Depth 6))
+    }
     try { Invoke-RestMethod @req }
-    catch { $_.ErrorDetails.Message | ConvertFrom-Json | ConvertTo-Json -Depth 5 }
+    catch { $_.ErrorDetails.Message | ConvertFrom-Json | ConvertTo-Json -Depth 6 }
 }
 
 # Sign in with the password bootstrap printed
@@ -149,7 +188,163 @@ $script:auth = @{ Authorization = "Bearer $($full.token)" }
 A code works once. Signing in within the same 30 seconds as enrolling needs
 the next code.
 
-## 7. Tests
+## 7. Clinical records
+
+These examples carry on from section 6, in the same PowerShell window. Only
+a doctor can start medication, prescribe or issue a document, so sign in as
+the doctor added above. A nurse can write notes, record results and prepare
+documents. The practice administrator sees none of this.
+
+```powershell
+$script:auth = @{}
+$login = Api POST /auth/login @{ tenant_slug = 'greenside'; email = 'dr.naidoo@greenside.co.za'; password = 'kettle-orbit-mango-42' }
+$script:auth = @{ Authorization = "Bearer $($login.token)" }
+$patient = "/patients/$($p.id)"    # the patient registered in section 6
+
+# Repeat prescriptions are for patients on the chronic register
+Api POST "$patient/conditions" @{ icd10_code = 'E11.9'; description = 'Type 2 diabetes mellitus'; is_chronic = $true }
+Api POST "$patient/allergies" @{ substance = 'Penicillin'; reaction = 'Rash'; severity = 'moderate' }
+```
+
+(With `MES_REQUIRE_MFA=true` the doctor enrols first, as in section 6.)
+
+**Medication.** A regimen records what the patient has been told to take,
+using a medicine from the catalogue:
+
+```powershell
+$med = (Api GET "/medications?q=metformin").items | Where-Object strength -eq '500 mg'
+$reg = Api POST "$patient/regimens" @{ medication_id = $med.id; dose = '1 tablet'; frequency = 'twice_daily'
+                                       instructions = 'With breakfast and supper' }
+Api GET "$patient/regimens"
+```
+
+**Consultation notes.** A note is a draft until its author signs it. After
+that it cannot be edited, only amended, and every amendment keeps the
+original wording:
+
+```powershell
+$note = Api POST "$patient/encounters" @{ encounter_type = 'follow_up'
+    presenting_complaint = 'Diabetes review'; examination = 'BP 142/88. Feet: sensation intact.'
+    assessment = 'Type 2 diabetes, suboptimal control'; plan = 'Continue metformin. HbA1c in 3 months.'
+    vitals = @{ systolic_bp = 142; diastolic_bp = 88; weight_kg = 91.5 } }
+Api POST "/encounters/$($note.id)/sign"
+
+Api POST "/encounters/$($note.id)/amendments" @{ field = 'plan'
+    new_value = 'Continue metformin. HbA1c and potassium in 3 months.'; reason = 'Potassium test added after signing' }
+(Api GET "/encounters/$($note.id)").amendments
+```
+
+`PATCH /encounters/{id}` saves a draft. Send the whole note: the text fields
+and vitals are replaced by what you send. The type and time are kept if you
+leave them out.
+
+**Prescriptions.** Items are copied from the patient's regimens. There are
+at most 5 repeats, and a script is valid for at most 6 months. A patient
+without a signed note in the last 6 months (`MES_DEFAULT_REVIEW_MONTHS`)
+needs an `override_reason`.
+
+```powershell
+$rx = Api POST "$patient/prescriptions" @{ repeats_authorised = 5
+          items = @(@{ regimen_id = $reg.id; quantity = '60 tablets' }) }
+$rx.notice                        # no interaction or allergy checks were performed
+$rx.recorded_allergies            # listed for your information, not checked
+$rx.prescription.valid_until
+
+$next = Api POST "/prescriptions/$($rx.prescription.id)/repeat"
+(Api GET "/prescriptions/$($rx.prescription.id)").repeats_used    # 1
+```
+
+**Laboratory results.** Captured as the laboratory printed them, flags
+included. The inbox lists unacknowledged results, critical ones first:
+
+```powershell
+$lab = Api POST "$patient/lab-results" @{ lab_name = 'City Pathology'; lab_reference = 'CP-889911'
+    panel = 'HbA1c, urea and electrolytes'
+    items = @(
+        @{ analyte = 'HbA1c'; value = '9.1'; unit = '%'; reference_range = '< 7.0'; abnormal_flag = 'high' }
+        @{ analyte = 'Potassium'; value = '6.4'; unit = 'mmol/L'; reference_range = '3.5 - 5.1'; abnormal_flag = 'critical_high' }
+    ) }
+
+(Api GET "/lab-results").items | Select-Object panel, has_critical, has_abnormal, reported_at
+Api POST "/lab-results/$($lab.id)/acknowledge" @{ note = 'Phoned the patient; repeat potassium today' }
+```
+
+**Sick notes and referral letters.** Both start as drafts. Issuing numbers
+the document (`MC-2026-0001`, `REF-2026-0001`, per practice and year) and
+freezes its text:
+
+```powershell
+$today = Get-Date -Format 'yyyy-MM-dd'
+$cert = Api POST "$patient/sick-notes" @{ basis = 'examination'; examined_on = $today; valid_from = $today
+                                          valid_to = (Get-Date).AddDays(2).ToString('yyyy-MM-dd') }
+$cert = Api POST "/documents/$($cert.id)/issue"
+$cert.document_number
+$cert.rendered_text
+
+$ref = Api POST "$patient/referrals" @{ to_name = 'Dr S. Pillay'; to_speciality = 'Nephrology'; urgency = 'urgent'
+    reason = 'Hyperkalaemia on ACE inhibitor'; clinical_summary = 'K 6.4 mmol/L today, HbA1c 9.1%.'
+    include_medication = $true; include_allergies = $true; encounter_id = $note.id }
+(Api POST "/documents/$($ref.id)/issue").rendered_text
+```
+
+A sick note leaves the diagnosis off unless you set `disclose_diagnosis` with
+the patient's agreement. A certificate that starts before the consultation
+needs a `backdate_reason`, and it says that it is backdated.
+
+The patient's summary brings it together:
+
+```powershell
+Api GET "$patient/summary" | ConvertTo-Json -Depth 6
+```
+
+## 8. AI note drafting
+
+Drafting turns a clinician's dictation into the five sections of a note. It
+is off until an Anthropic API key is set. Only set one once a data
+processing agreement is in place, because dictations are patient data. The
+patient's name and ID number are replaced with placeholders before anything
+is sent.
+
+1. Add the key to `.env` and restart the server:
+
+   ```
+   ANTHROPIC_API_KEY=sk-ant-...
+   ```
+
+   The server logs `note drafting enabled` at start-up. Without a key it logs
+   `note drafting disabled`, and drafting requests answer `503 ai_unavailable`.
+
+2. Record the patient's consent. Without it, nothing is sent and the request
+   answers `409 ai_consent_required`:
+
+   ```powershell
+   Api POST "$patient/consents" @{ purpose = 'ai_assisted_review'; granted = $true; method = 'verbal' }
+   ```
+
+3. Draft into an unsigned note, read it, and copy what you accept into the
+   note yourself:
+
+   ```powershell
+   $visit = Api POST "$patient/encounters" @{ presenting_complaint = 'Cough' }
+   $d = Api POST "/encounters/$($visit.id)/draft-note" @{
+       dictation = 'Three days of dry cough, no fever, non-smoker. Chest clear. Viral URTI. Fluids and rest, come back if worse.' }
+   $d.notice
+   $d.draft.draft          # presenting_complaint, history, examination, assessment, plan
+   $d.draft.draft.flags    # things the draft could not place or found unclear
+
+   $x = $d.draft.draft
+   Api PATCH "/encounters/$($visit.id)" @{ presenting_complaint = $x.presenting_complaint; history = $x.history
+       examination = $x.examination; assessment = $x.assessment; plan = $x.plan }
+   Api POST "/encounters/$($visit.id)/sign"
+   ```
+
+The draft is stored beside the note, never in it, and the note records that
+drafting was used. If a draft is wrong in a way worth reviewing, flag it:
+`Api POST "/encounters/$($visit.id)/drafts/$($d.draft.id)/flag" @{ reason = '...' }`.
+Each practice can make `MES_AI_DAILY_LIMIT` drafting requests a day (200 by
+default). After that, requests answer `429 ai_limit_reached` until midnight.
+
+## 9. Tests
 
 ```powershell
 .\make.ps1 test                      # unit tests, no database needed
@@ -159,7 +354,8 @@ $env:MES_TEST_DSN = 'mes:your-password@tcp(127.0.0.1:3306)/mes_test'
 ```
 
 The integration tests create their own practices with random codes, so the
-test database never needs resetting.
+test database never needs resetting. They never call Anthropic: drafting is
+tested against a stand-in.
 
 ## Troubleshooting
 
@@ -172,3 +368,9 @@ test database never needs resetting.
 | `bind: Only one usage of each socket address` | Port 8080 is taken; set `MES_ADDR=:8081` in `.env` |
 | Sign-in always fails | The practice code is the `-slug` you gave bootstrap, not the practice name. Five wrong passwords lock the account for 15 minutes |
 | `go: ... dial tcp: lookup proxy.golang.org` | The first build downloads one dependency; it needs internet access once |
+| `403 doctor_only` | Starting medication, prescribing and issuing documents need a doctor's account |
+| `409 not_chronic` | The patient has no active chronic condition; add one with `is_chronic = $true` |
+| `409 review_overdue` | No signed note within the review interval. Sign one, or send `override_reason` |
+| `503 ai_unavailable` | `ANTHROPIC_API_KEY` is empty, or the server was not restarted after setting it |
+| `the header row has no generic_name column` | The CSV's first line is not the header, or it was saved as UTF-16. PowerShell 5.1's `>` and `Out-File` do that; use `Set-Content -Encoding UTF8`, or save as "CSV UTF-8" in Excel |
+| Accented names (Zoë) are stored garbled | The request body was not sent as UTF-8. Use the `Api` function above, which sends UTF-8 bytes |
