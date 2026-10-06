@@ -290,8 +290,17 @@ func (s *PatientService) Update(ctx context.Context, id model.ID, in PatientInpu
 		}
 		return nil, fromRepo(err)
 	}
+	changed := changedFields(&before, p)
 	s.recordWrite(ctx, model.AuditEntry{Action: model.ActionPatientUpdated, Outcome: model.OutcomeSuccess,
-		SubjectType: "patient", SubjectID: idp(id), Metadata: map[string]any{"fields": changedFields(&before, p)}})
+		SubjectType: "patient", SubjectID: idp(id), Metadata: map[string]any{"fields": changed}})
+	for _, f := range changed {
+		// The dose schedule depends on when the patient is awake and on
+		// whether they can be asked at all.
+		if f == "waking_hours" || f == "mobile" || f == "preferred_channel" || f == "status" {
+			s.refreshSchedule(ctx, id)
+			break
+		}
+	}
 	return p, nil
 }
 
@@ -438,10 +447,20 @@ func (s *PatientService) Summary(ctx context.Context, id model.ID) (*model.Patie
 	if err != nil {
 		return nil, err
 	}
+	counts, err := s.reporting().Adherence(ctx, id, s.now())
+	if err != nil {
+		return nil, err
+	}
 	sum := &model.PatientSummary{
 		Patient: *p, AgeYears: p.AgeAt(s.now()),
 		Allergies: []model.Allergy{}, Conditions: []model.Condition{}, Consents: consents.Statuses(),
-		Medications: medications, RecentEncounters: recent,
+		Medications: medications, RecentEncounters: recent, Adherence: []model.RegimenAdherence{},
+	}
+	for _, g := range medications {
+		c := counts[g.ID]
+		sum.Adherence = append(sum.Adherence, model.RegimenAdherence{RegimenID: g.ID, MedicationName: g.MedicationName,
+			Periods: []model.AdherencePeriod{model.NewAdherencePeriod(7, c.Days7), model.NewAdherencePeriod(30, c.Days30),
+				model.NewAdherencePeriod(90, c.Days90)}})
 	}
 	if s.actor.Role.IsClinical() {
 		if sum.OpenDraftNotes, err = s.encounters().OpenDrafts(ctx, id); err != nil {
@@ -651,13 +670,16 @@ func (s *PatientService) RecordConsent(ctx context.Context, patientID model.ID, 
 		return nil, err
 	}
 	c := &model.Consent{ID: model.MustNewID(), PatientID: patientID, Purpose: in.Purpose, Granted: *in.Granted,
-		Method: in.Method, Note: in.Note, RecordedBy: s.actor.UserID, RecordedAt: s.now()}
+		Method: in.Method, Note: in.Note, RecordedBy: idp(s.actor.UserID), RecordedAt: s.now()}
 	if err := s.patients().AddConsent(ctx, c); err != nil {
 		return nil, fromRepo(err)
 	}
 	s.recordWrite(ctx, model.AuditEntry{Action: model.ActionConsentRecorded, Outcome: model.OutcomeSuccess,
 		SubjectType: "patient", SubjectID: idp(patientID),
 		Metadata: map[string]any{"purpose": string(c.Purpose), "granted": c.Granted, "method": string(c.Method)}})
+	if c.Purpose == model.ConsentReminderComms {
+		s.refreshSchedule(ctx, patientID) // reminders start, or future doses are withdrawn
+	}
 	return c, nil
 }
 

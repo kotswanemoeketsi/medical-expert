@@ -22,6 +22,7 @@ import (
 	"github.com/yourorg/medical-expert-system/internal/controller"
 	"github.com/yourorg/medical-expert-system/internal/db"
 	"github.com/yourorg/medical-expert-system/internal/job"
+	"github.com/yourorg/medical-expert-system/internal/notify"
 	"github.com/yourorg/medical-expert-system/internal/service"
 )
 
@@ -85,12 +86,33 @@ func run() error {
 		logger.Info("note drafting disabled: ANTHROPIC_API_KEY is not set")
 	}
 
+	var sender notify.Sender
+	if cfg.WhatsAppConfigured() {
+		client, err := notify.New(notify.Config{
+			PhoneNumberID: cfg.WhatsAppPhoneNumberID, AccessToken: cfg.WhatsAppAccessToken,
+			APIVersion: cfg.WhatsAppAPIVersion, BaseURL: cfg.WhatsAppBaseURL, Language: cfg.WhatsAppLanguage,
+		})
+		if err != nil {
+			return err
+		}
+		sender = client
+		logger.Info("whatsapp messaging available; each practice switches it on in its settings",
+			"api_version", cfg.WhatsAppAPIVersion, "language", cfg.WhatsAppLanguage,
+			"follow_up", cfg.ReminderFollowUp.String(), "daily_limit_per_practice", cfg.NotificationDailyLimit)
+		if cfg.WhatsAppAppSecret == "" {
+			logger.Warn("MES_WHATSAPP_APP_SECRET is not set: every webhook will be refused, so patients' replies and delivery receipts will not be recorded")
+		}
+	} else {
+		logger.Info("whatsapp messaging disabled: MES_WHATSAPP_PHONE_NUMBER_ID and MES_WHATSAPP_ACCESS_TOKEN are not set")
+	}
+
 	reg, err := service.NewRegistry(service.Deps{
-		DB: conn, Logger: logger, Drafter: drafter,
+		DB: conn, Logger: logger, Drafter: drafter, Sender: sender, PhoneNumberID: cfg.WhatsAppPhoneNumberID,
 		Config: service.Config{
 			SessionIdle: cfg.SessionIdle, SessionMax: cfg.SessionMax, MFAChallengeTTL: cfg.MFAChallengeTTL,
 			MaxLoginAttempts: cfg.MaxLoginAttempts, Lockout: cfg.Lockout, RequireMFA: cfg.RequireMFA,
 			MFAIssuer: cfg.MFAIssuer, AIDailyLimit: cfg.AIDailyLimit, DefaultReviewMonths: cfg.DefaultReviewMonths,
+			DoseGrace: cfg.DoseGrace, FollowUpAfter: cfg.ReminderFollowUp, NotificationDailyLimit: cfg.NotificationDailyLimit,
 		},
 	})
 	if err != nil {
@@ -98,6 +120,7 @@ func run() error {
 	}
 	api := controller.New(reg, logger, controller.Options{
 		Production: cfg.Production(), TrustProxyHeaders: cfg.TrustProxyHeaders, LoginPerMinute: cfg.LoginPerMinute,
+		WhatsAppAppSecret: cfg.WhatsAppAppSecret, WhatsAppVerifyToken: cfg.WhatsAppVerifyToken,
 	})
 
 	(&job.Scheduler{Log: logger, Interval: time.Hour, Tasks: []job.Task{
@@ -109,7 +132,24 @@ func run() error {
 			n, err := reg.ExpirePrescriptions(ctx)
 			return fmt.Sprintf("%d expired", n), err
 		}},
+		{Name: "schedule_doses", Run: func(ctx context.Context) (string, error) {
+			res, err := reg.GenerateDoses(ctx)
+			return fmt.Sprintf("%d added, %d withdrawn", res.Added, res.Removed), err
+		}},
+		{Name: "close_overdue_doses", Run: func(ctx context.Context) (string, error) {
+			n, err := reg.CloseOverdueDoses(ctx)
+			return fmt.Sprintf("%d closed as missed", n), err
+		}},
 	}}).Start(ctx)
+	if sender != nil {
+		// Reminders go out within a minute of their time (NFR-05).
+		(&job.Scheduler{Log: logger, Interval: time.Minute, Quiet: true, Tasks: []job.Task{
+			{Name: "send_reminders", Run: func(ctx context.Context) (string, error) {
+				res, err := reg.DispatchReminders(ctx)
+				return res.String(), err
+			}},
+		}}).Start(ctx)
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,

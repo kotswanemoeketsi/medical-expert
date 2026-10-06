@@ -116,17 +116,47 @@ const (
 // Tenant is one practice. The contact details appear on letters and
 // certificates, so they belong to the practice rather than to settings.
 type Tenant struct {
-	ID             ID           `json:"id"`
-	Slug           string       `json:"slug"`
-	Name           string       `json:"name"`
-	Status         TenantStatus `json:"status"`
-	Timezone       string       `json:"timezone"`
-	PracticeNumber string       `json:"practice_number,omitempty"`
-	Address        string       `json:"address,omitempty"`
-	Phone          string       `json:"phone,omitempty"`
-	Email          string       `json:"email,omitempty"`
-	CreatedAt      time.Time    `json:"created_at"`
-	UpdatedAt      time.Time    `json:"updated_at"`
+	ID             ID               `json:"id"`
+	Slug           string           `json:"slug"`
+	Name           string           `json:"name"`
+	Status         TenantStatus     `json:"status"`
+	Timezone       string           `json:"timezone"`
+	PracticeNumber string           `json:"practice_number,omitempty"`
+	Address        string           `json:"address,omitempty"`
+	Phone          string           `json:"phone,omitempty"`
+	Email          string           `json:"email,omitempty"`
+	Settings       PracticeSettings `json:"settings"`
+	CreatedAt      time.Time        `json:"created_at"`
+	UpdatedAt      time.Time        `json:"updated_at"`
+}
+
+// PracticeSettings is per-practice configuration, kept in
+// tenants.settings_json (BR-0.6).
+type PracticeSettings struct {
+	// WhatsAppEnabled lets the practice send reminders and recalls. It is off
+	// until an administrator turns it on: messaging patients is a step a
+	// practice takes deliberately, not a side effect of the platform being
+	// configured.
+	WhatsAppEnabled bool `json:"whatsapp_enabled"`
+	// MessagingName is how the practice is named in messages; empty means the
+	// practice name. A practice whose name says what it treats sets a
+	// neutral one, because the message is read by whoever holds the phone.
+	MessagingName string `json:"messaging_name,omitempty"`
+	// FollowUpMinutes is how long after a dose's time a second reminder goes
+	// out if the dose is still unanswered: nil means the platform default, 0
+	// means never.
+	FollowUpMinutes *int `json:"follow_up_minutes,omitempty"`
+	// Demo marks a practice created by cmd/seed. Its patients' numbers are
+	// made up, so it never sends anything, whatever else is configured.
+	Demo bool `json:"demo,omitempty"`
+}
+
+// SenderName is the practice's name as it appears in messages.
+func (s PracticeSettings) SenderName(practiceName string) string {
+	if n := strings.TrimSpace(s.MessagingName); n != "" {
+		return n
+	}
+	return practiceName
 }
 
 // ---------------------------------------------------------------------------
@@ -383,14 +413,16 @@ func (m ConsentMethod) Valid() bool {
 
 // Consent is one decision. Rows are never updated: withdrawal is a new row.
 type Consent struct {
-	ID         ID             `json:"id"`
-	PatientID  ID             `json:"patient_id"`
-	Purpose    ConsentPurpose `json:"purpose"`
-	Granted    bool           `json:"granted"`
-	Method     ConsentMethod  `json:"method"`
-	Note       string         `json:"note,omitempty"`
-	RecordedBy ID             `json:"recorded_by"`
-	RecordedAt time.Time      `json:"recorded_at"`
+	ID        ID             `json:"id"`
+	PatientID ID             `json:"patient_id"`
+	Purpose   ConsentPurpose `json:"purpose"`
+	Granted   bool           `json:"granted"`
+	Method    ConsentMethod  `json:"method"`
+	Note      string         `json:"note,omitempty"`
+	// RecordedBy is the staff member who recorded the decision; nil when the
+	// patient made it themselves, by replying STOP to a message.
+	RecordedBy *ID       `json:"recorded_by,omitempty"`
+	RecordedAt time.Time `json:"recorded_at"`
 }
 
 // ConsentState is the latest decision per purpose.
@@ -419,9 +451,9 @@ func (s ConsentState) Statuses() []ConsentStatus {
 	for _, p := range ConsentPurposes {
 		st := ConsentStatus{Purpose: p}
 		if c, ok := s[p]; ok {
-			at, by := c.RecordedAt, c.RecordedBy
+			at := c.RecordedAt
 			st.Granted, st.Recorded, st.Method = c.Granted, true, c.Method
-			st.RecordedAt, st.RecordedBy = &at, &by
+			st.RecordedAt, st.RecordedBy = &at, c.RecordedBy
 		}
 		out = append(out, st)
 	}
@@ -442,6 +474,9 @@ type PatientSummary struct {
 	// UnacknowledgedAbnormalResults counts abnormal lab results no clinician
 	// has acknowledged yet.
 	UnacknowledgedAbnormalResults int `json:"unacknowledged_abnormal_results"`
+	// Adherence is each current medicine's record over 7, 30 and 90 days
+	// (BR-4.6).
+	Adherence []RegimenAdherence `json:"adherence"`
 }
 
 // ---------------------------------------------------------------------------

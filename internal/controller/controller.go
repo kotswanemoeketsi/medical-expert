@@ -29,6 +29,11 @@ type Options struct {
 	TrustProxyHeaders bool
 	LoginPerMinute    int // per source address
 	MaxBodyBytes      int64
+	// WhatsAppAppSecret checks webhook signatures. Empty refuses every
+	// webhook rather than trusting unsigned ones.
+	WhatsAppAppSecret string
+	// WhatsAppVerifyToken answers Meta's subscription check.
+	WhatsAppVerifyToken string
 }
 
 // API holds what handlers need.

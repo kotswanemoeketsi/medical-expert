@@ -209,7 +209,8 @@ func TestDecodeOptionalAcceptsNoBodyWhateverItsLabel(t *testing.T) {
 
 func TestEveryRouteIsGatedOrDeliberatelyPublic(t *testing.T) {
 	a := New(nil, nil, Options{})
-	public := map[string]bool{"GET /healthz": true, "POST /api/v1/auth/login": true}
+	public := map[string]bool{"GET /healthz": true, "POST /api/v1/auth/login": true,
+		"GET /api/v1/webhooks/whatsapp": true, "POST /api/v1/webhooks/whatsapp": true}
 	seen := map[string]bool{}
 	for _, rt := range a.Routes() {
 		key := rt.Method + " " + rt.Path

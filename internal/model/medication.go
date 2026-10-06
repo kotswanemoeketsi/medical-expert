@@ -185,6 +185,16 @@ const (
 	ResponseStaff    ResponseChannel = "staff"
 )
 
+// DoseSource says where a dose came from. Scheduled doses are generated from
+// the regimen and kept in step with it; manual ones were added by hand and
+// the scheduler never touches them.
+type DoseSource string
+
+const (
+	DoseFromSchedule DoseSource = "schedule"
+	DoseManual       DoseSource = "manual"
+)
+
 // DoseEvent is one scheduled dose and what happened to it.
 type DoseEvent struct {
 	ID              ID              `json:"id"`
@@ -192,6 +202,8 @@ type DoseEvent struct {
 	RegimenID       ID              `json:"regimen_id"`
 	MedicationName  string          `json:"medication_name,omitempty"`
 	ScheduledAt     time.Time       `json:"scheduled_at"`
+	Source          DoseSource      `json:"source"`
+	RemindedAt      *time.Time      `json:"reminded_at,omitempty"`
 	Status          DoseStatus      `json:"status"`
 	RespondedAt     *time.Time      `json:"responded_at,omitempty"`
 	ResponseChannel ResponseChannel `json:"response_channel,omitempty"`

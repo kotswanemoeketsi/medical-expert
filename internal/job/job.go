@@ -20,6 +20,9 @@ type Scheduler struct {
 	Log      *slog.Logger
 	Interval time.Duration
 	Tasks    []Task
+	// Quiet logs successful runs at debug level, for a job that runs every
+	// minute. Failures are always logged.
+	Quiet bool
 }
 
 // Start runs every task shortly after start-up and then on each tick.
@@ -64,5 +67,9 @@ func (s *Scheduler) runOne(ctx context.Context, t Task) {
 		s.Log.ErrorContext(ctx, "job failed", "job", t.Name, "err", err)
 		return
 	}
-	s.Log.InfoContext(ctx, "job finished", "job", t.Name, "result", summary, "ms", time.Since(start).Milliseconds())
+	level := slog.LevelInfo
+	if s.Quiet {
+		level = slog.LevelDebug
+	}
+	s.Log.Log(ctx, level, "job finished", "job", t.Name, "result", summary, "ms", time.Since(start).Milliseconds())
 }

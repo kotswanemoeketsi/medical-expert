@@ -373,7 +373,7 @@ VALUES (:tenant, ?, ?, ?, ?, ?, ?, ?, ?)`
 // AddConsent appends a decision. There is deliberately no update or delete.
 func (r *PatientRepository) AddConsent(ctx context.Context, c *model.Consent) error {
 	_, err := r.scope.Exec(ctx, insertConsent, c.ID.Bytes(), c.PatientID.Bytes(), string(c.Purpose),
-		c.Granted, string(c.Method), nullString(c.Note), c.RecordedBy.Bytes(), c.RecordedAt)
+		c.Granted, string(c.Method), nullString(c.Note), nullID(c.RecordedBy), c.RecordedAt)
 	return translate(err)
 }
 
@@ -394,11 +394,12 @@ func (r *PatientRepository) ConsentHistory(ctx context.Context, patientID model.
 	for rows.Next() {
 		var c model.Consent
 		var note sql.Null[string]
+		var by sql.Null[model.ID]
 		if err := rows.Scan(&c.ID, &c.PatientID, &c.Purpose, &c.Granted, &c.Method, &note,
-			&c.RecordedBy, &c.RecordedAt); err != nil {
+			&by, &c.RecordedAt); err != nil {
 			return nil, err
 		}
-		c.Note = note.V
+		c.Note, c.RecordedBy = note.V, idPtr(by)
 		out = append(out, c)
 	}
 	return out, rows.Err()

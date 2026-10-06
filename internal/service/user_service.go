@@ -115,6 +115,9 @@ func (s *UserService) Create(ctx context.Context, in CreateUserInput) (*model.Us
 	}
 	s.recordWrite(ctx, model.AuditEntry{Action: model.ActionUserCreated, Outcome: model.OutcomeSuccess,
 		SubjectType: "user", SubjectID: idp(u.ID), Metadata: map[string]any{"role": string(u.Role), "email": u.Email}})
+	if u.PatientID != nil {
+		s.refreshSchedule(ctx, *u.PatientID) // a patient with a login can confirm doses themselves
+	}
 	return u, nil
 }
 
@@ -180,6 +183,9 @@ func (s *UserService) SetStatus(ctx context.Context, id model.ID, status model.U
 		SubjectType: "user", SubjectID: idp(id), Reason: reason,
 		Metadata: map[string]any{"from": string(target.Status), "to": string(status), "sessions_revoked": revoked, "unlocked": unlocked}})
 	target.Status, target.UpdatedAt = status, now
+	if target.PatientID != nil {
+		s.refreshSchedule(ctx, *target.PatientID)
+	}
 	return target, nil
 }
 

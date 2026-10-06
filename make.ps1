@@ -6,6 +6,7 @@
   .\make.ps1 test
   .\make.ps1 migrate
   .\make.ps1 bootstrap -Slug greenside -Name "Greenside Clinic" -AdminEmail admin@greenside.co.za -AdminName "Jane Admin"
+  .\make.ps1 seed
   .\make.ps1 run
 
 .NOTES
@@ -17,7 +18,7 @@
 #>
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'build', 'test', 'test-integration', 'vet', 'migrate', 'check', 'bootstrap', 'run')]
+    [ValidateSet('help', 'build', 'test', 'test-integration', 'vet', 'migrate', 'check', 'bootstrap', 'seed', 'run')]
     [string]$Task = 'help',
 
     [string]$Slug,
@@ -41,7 +42,7 @@ if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
 switch ($Task) {
     'build' {
         Invoke-Go build -o bin/ ./cmd/...
-        Write-Host 'Built bin\server.exe, bin\migrate.exe and bin\bootstrap.exe'
+        Write-Host 'Built server, migrate, bootstrap, catalogue and seed in bin\'
     }
     'test' {
         Invoke-Go test ./...
@@ -68,18 +69,24 @@ switch ($Task) {
         }
         Invoke-Go run ./cmd/bootstrap -slug $Slug -name $Name -admin-email $AdminEmail -admin-name $AdminName
     }
+    'seed' {
+        if (-not $Slug) { $Slug = 'demo' }
+        if (-not $Name) { $Name = 'Greenside Clinic' }
+        Invoke-Go run ./cmd/seed -slug $Slug -name $Name
+    }
     'run' {
         Invoke-Go run ./cmd/server
     }
     default {
         Write-Host @'
-.\make.ps1 build              build bin\server.exe, bin\migrate.exe, bin\bootstrap.exe
+.\make.ps1 build              build every program into bin\
 .\make.ps1 test               unit tests (no database needed)
 .\make.ps1 test-integration   all tests; needs $env:MES_TEST_DSN
 .\make.ps1 vet                go vet, including integration tests
 .\make.ps1 migrate            apply pending migrations
 .\make.ps1 check              exit 2 if migrations are pending
 .\make.ps1 bootstrap -Slug ... -Name ... -AdminEmail ... -AdminName ...
+.\make.ps1 seed               a demo practice of made-up patients (-Slug demo -Name "Greenside Clinic")
 .\make.ps1 run                run the API server
 '@
     }

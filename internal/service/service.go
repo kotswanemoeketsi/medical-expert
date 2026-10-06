@@ -20,6 +20,7 @@ import (
 
 	"github.com/yourorg/medical-expert-system/internal/ai"
 	"github.com/yourorg/medical-expert-system/internal/model"
+	"github.com/yourorg/medical-expert-system/internal/notify"
 	"github.com/yourorg/medical-expert-system/internal/repository"
 	"github.com/yourorg/medical-expert-system/internal/secure"
 	"github.com/yourorg/medical-expert-system/internal/tenant"
@@ -42,6 +43,16 @@ type Config struct {
 	// their own: a repeat prescription for a patient not seen in a signed
 	// note within it needs an override reason.
 	DefaultReviewMonths int
+
+	// DoseGrace is how long a dose stays answerable before it is closed as
+	// missed. A patient who confirms an 08:00 dose at 11:00 has taken it.
+	DoseGrace time.Duration
+	// FollowUpAfter is how long after a dose's time a second reminder goes
+	// out if it is still unanswered, for practices that have not set their
+	// own. Zero turns follow-ups off.
+	FollowUpAfter time.Duration
+	// NotificationDailyLimit caps messages per practice per day (BR-0.8).
+	NotificationDailyLimit int
 }
 
 func (c Config) withDefaults() Config {
@@ -69,6 +80,15 @@ func (c Config) withDefaults() Config {
 	if c.DefaultReviewMonths <= 0 {
 		c.DefaultReviewMonths = 6
 	}
+	if c.DoseGrace <= 0 {
+		c.DoseGrace = 12 * time.Hour
+	}
+	if c.FollowUpAfter < 0 {
+		c.FollowUpAfter = 0
+	}
+	if c.NotificationDailyLimit <= 0 {
+		c.NotificationDailyLimit = 1000
+	}
 	return c
 }
 
@@ -80,6 +100,18 @@ type Deps struct {
 	Config Config
 	// Drafter drafts consultation notes. Nil switches drafting off.
 	Drafter ai.Drafter
+	// Sender sends WhatsApp messages. Nil switches messaging off everywhere.
+	Sender notify.Sender
+	// PhoneNumberID is the sending WhatsApp number; webhooks naming another
+	// number are ignored.
+	PhoneNumberID string
+	// AllowDemoSends lets a demo practice send, to a stand-in sender only.
+	// The demo seeder sets it; the server never does.
+	AllowDemoSends bool
+	// OnlyTenant restricts the system's own jobs — scheduling, reminders,
+	// closing missed doses — to one practice. The demo seeder sets it so its
+	// simulation never touches another practice's patients.
+	OnlyTenant model.ID
 	// Now is the clock; tests replace it. Defaults to UTC wall time.
 	Now func() time.Time
 }
@@ -94,7 +126,12 @@ type Registry struct {
 	platform  *repository.PlatformRepository
 	audit     *repository.AuditRepository
 	drafter   ai.Drafter
+	sender    notify.Sender
+	phoneID   string
+	allowDemo bool
+	only      model.ID
 	dummyHash string
+	terms     termCache
 }
 
 func NewRegistry(d Deps) (*Registry, error) {
@@ -125,6 +162,10 @@ func NewRegistry(d Deps) (*Registry, error) {
 		platform:  repository.NewPlatformRepository(d.DB),
 		audit:     repository.NewAuditRepository(d.DB),
 		drafter:   d.Drafter,
+		sender:    d.Sender,
+		phoneID:   d.PhoneNumberID,
+		allowDemo: d.AllowDemoSends,
+		only:      d.OnlyTenant,
 		dummyHash: dummy,
 	}, nil
 }
@@ -189,6 +230,11 @@ type Services struct {
 	Prescriptions *PrescriptionService
 	Labs          *LabService
 	Documents     *DocumentService
+	Notifications *NotificationService
+	Practice      *PracticeService
+	Dashboard     *DashboardService
+	Recalls       *RecallService
+	Maintenance   *MaintenanceService
 }
 
 // For builds services bound to one tenant and one actor.
@@ -205,6 +251,11 @@ func (r *Registry) For(scope *tenant.Scope, actor Actor, state SessionState) *Se
 		Prescriptions: &PrescriptionService{base: b},
 		Labs:          &LabService{base: b},
 		Documents:     &DocumentService{base: b},
+		Notifications: &NotificationService{base: b},
+		Practice:      &PracticeService{base: b},
+		Dashboard:     &DashboardService{base: b},
+		Recalls:       &RecallService{base: b},
+		Maintenance:   &MaintenanceService{base: b},
 	}
 }
 

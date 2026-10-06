@@ -53,8 +53,9 @@ MES_DSN=mes:your-password@tcp(127.0.0.1:3306)/mes
 ```
 
 The commands read `.env` from the folder they are run in, so there is no need
-to set environment variables by hand. Leave `ANTHROPIC_API_KEY` empty for now;
-section 8 covers note drafting.
+to set environment variables by hand. Leave `ANTHROPIC_API_KEY` and the
+`MES_WHATSAPP_*` values empty for now: section 8 covers note drafting and
+section 10 WhatsApp.
 
 ## 5. Create the schema, a practice, and run
 
@@ -81,7 +82,7 @@ The same steps through the helper script:
 The server listens on http://localhost:8080. Check it with
 `Invoke-RestMethod http://localhost:8080/healthz`.
 
-### Upgrading from stage 1
+### Upgrading from an earlier stage
 
 Stop the server, then:
 
@@ -89,10 +90,26 @@ Stop the server, then:
 go run ./cmd/migrate
 ```
 
-This applies migrations 0002 to 0005 (medication catalogue, notes,
-prescriptions, lab results, documents). Practices, users and patients are
-left as they were. While `MES_AUTO_MIGRATE` is on, which it is by default
-outside production, starting the server does the same.
+This applies the migrations you do not have yet: 0002 to 0005 came with
+stage 2 (medication, notes, prescriptions, lab results, documents) and 0006
+with stage 3 (messages). Practices, users and patients are left as they
+were. While `MES_AUTO_MIGRATE` is on, which it is by default outside
+production, starting the server does the same.
+
+### A demo practice
+
+```powershell
+.\make.ps1 seed
+```
+
+or `go run ./cmd/seed -slug demo -name "Greenside Clinic"`. In about half a
+minute this builds a practice of 24 made-up patients with months of
+history: notes, scripts, results, letters, and 60 days of WhatsApp
+reminders and replies from simulated patients. It prints sign-ins for an
+administrator, a doctor, a nurse and two patients (practice code `demo`).
+Add `-password 'something-long'` to give every demo sign-in the same
+password. The demo practice never sends a message: its patients and their
+numbers are made up.
 
 ### Adding medicines to the catalogue
 
@@ -344,7 +361,79 @@ drafting was used. If a draft is wrong in a way worth reviewing, flag it:
 Each practice can make `MES_AI_DAILY_LIMIT` drafting requests a day (200 by
 default). After that, requests answer `429 ai_limit_reached` until midnight.
 
-## 9. Tests
+## 9. Practice settings, dashboard and recall lists
+
+Practice details and settings belong to the administrator. The dashboard
+and recall lists are for any staff member.
+
+```powershell
+$doctorAuth = $script:auth           # the doctor from section 7
+$script:auth = @{}
+$admin = Api POST /auth/login @{ tenant_slug = 'greenside'; email = 'admin@greenside.co.za'; password = 'a-long-passphrase-of-your-own' }
+$adminAuth = @{ Authorization = "Bearer $($admin.token)" }
+$script:auth = $adminAuth
+
+Api PATCH /practice @{ phone = '011 555 0123'; address = '12 Main Road, Greenside'; practice_number = '0123456' }
+(Api GET /practice).practice
+
+# Counts only: nothing on the dashboard identifies a patient
+$dash = Api GET '/dashboard?days=30'
+$dash.patients
+$dash.adherence
+$dash.notes
+
+# Patients to phone
+(Api GET '/recalls?reason=review_overdue').items | Select-Object first_name, last_name, mobile_display, last_review
+(Api GET '/recalls?reason=script_expiring&days=14').items | Select-Object first_name, last_name, valid_until, repeats_left
+(Api GET '/recalls?reason=not_responding').items | Select-Object first_name, last_name, doses_due, doses_answered
+
+# Unreviewed abnormal results are a list for clinicians only
+$script:auth = $doctorAuth
+(Api GET '/recalls?reason=unacknowledged_result').items | Select-Object first_name, last_name, panel, critical
+```
+
+With only the examples above, the lists are short or empty: the patient in
+section 7 was seen today. The demo practice (section 5) has plenty on every
+list; sign in to it to see them filled.
+
+## 10. WhatsApp reminders
+
+Reminders need a WhatsApp Business account on the server and approved
+message templates: [WHATSAPP.md](WHATSAPP.md) covers both. Without them, the
+settings below are saved and the last calls answer
+`503 messaging_not_configured`.
+
+**From here on, messages are real.** Use your own mobile number for the test
+patient: the example number in section 6 belongs to somebody.
+
+```powershell
+$script:auth = $adminAuth
+Api PATCH /practice @{ whatsapp_enabled = $true }
+(Api GET /practice).messaging              # active is True with a WhatsApp account on the server
+
+$t = Api POST /patients @{ first_name = 'Test'; last_name = 'Patient'; date_of_birth = '1990-01-01'; sex = 'female'
+                           mobile = 'YOUR-OWN-NUMBER'; preferred_channel = 'whatsapp' }
+Api POST "/patients/$($t.id)/consents" @{ purpose = 'reminder_communications'; granted = $true; method = 'verbal' }
+
+# A recall straight away; the preview is the message as it arrives
+(Api POST "/patients/$($t.id)/notifications/recall").preview
+Api GET /notifications/health
+
+# A medicine, so reminders are scheduled; the first arrives at the next dose time
+$script:auth = $doctorAuth
+Api POST "/patients/$($t.id)/conditions" @{ icd10_code = 'I10'; description = 'Essential hypertension'; is_chronic = $true }
+$aml = (Api GET '/medications?q=amlodipine').items | Where-Object strength -eq '5 mg'
+Api POST "/patients/$($t.id)/regimens" @{ medication_id = $aml.id; dose = '1 tablet'; frequency = 'once_daily' }
+(Api GET "/patients/$($t.id)/doses").items | Select-Object scheduled_at, status, source
+(Api GET "/patients/$($t.id)/notifications").notifications | Select-Object purpose, status, preview
+```
+
+When the reminder arrives, press **Taken**. Once the webhook is set up
+(WHATSAPP.md, section 3), the dose shows `taken` with `response_channel`
+`whatsapp`, and your reply appears under `replies` in the patient's
+notifications. Reply STOP to withdraw the consent again.
+
+## 11. Tests
 
 ```powershell
 .\make.ps1 test                      # unit tests, no database needed
@@ -354,8 +443,8 @@ $env:MES_TEST_DSN = 'mes:your-password@tcp(127.0.0.1:3306)/mes_test'
 ```
 
 The integration tests create their own practices with random codes, so the
-test database never needs resetting. They never call Anthropic: drafting is
-tested against a stand-in.
+test database never needs resetting. They never call Anthropic or Meta:
+drafting and WhatsApp are tested against stand-ins.
 
 ## Troubleshooting
 
@@ -374,3 +463,10 @@ tested against a stand-in.
 | `503 ai_unavailable` | `ANTHROPIC_API_KEY` is empty, or the server was not restarted after setting it |
 | `the header row has no generic_name column` | The CSV's first line is not the header, or it was saved as UTF-16. PowerShell 5.1's `>` and `Out-File` do that; use `Set-Content -Encoding UTF8`, or save as "CSV UTF-8" in Excel |
 | Accented names (Zoë) are stored garbled | The request body was not sent as UTF-8. Use the `Api` function above, which sends UTF-8 bytes |
+| `503 messaging_not_configured` | The server has no WhatsApp account: set the `MES_WHATSAPP_*` values (WHATSAPP.md) and restart |
+| `409 messaging_off` | The practice has not switched messaging on: `PATCH /practice` with `whatsapp_enabled = $true` |
+| `422 clinical_detail` when switching messaging on | The name patients would see says what the practice treats, or names a medicine; set a neutral `messaging_name` |
+| `409 comms_consent_required` | Record the patient's `reminder_communications` consent first |
+| `409 no_whatsapp` | The patient has no mobile number, or prefers another channel; the message says which |
+| A patient on WhatsApp has no doses scheduled | Doses are only scheduled for patients who can answer: messaging on for the practice, their consent, and a number. The hourly run catches up within the hour |
+| Replies never arrive | The webhook is not set up, or `MES_WHATSAPP_APP_SECRET` is missing or wrong: the server logs `whatsapp webhook refused` |

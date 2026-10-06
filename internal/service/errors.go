@@ -114,7 +114,46 @@ var (
 		Message: "That is not possible from the document's current status."}
 	ErrDraftAlreadyFlagged = &Error{Kind: KindConflict, Code: "already_flagged",
 		Message: "This draft has already been flagged for review."}
+
+	ErrMessagingNotConfigured = &Error{Kind: KindUnavailable, Code: "messaging_not_configured",
+		Message: "WhatsApp is not configured on this server, so no messages can be sent."}
+	ErrMessagingOff = &Error{Kind: KindConflict, Code: "messaging_off",
+		Message: "WhatsApp messaging is switched off for this practice. An administrator can switch it on in the practice settings."}
+	ErrDemoPractice = &Error{Kind: KindConflict, Code: "demo_practice",
+		Message: "This is a demo practice. Its patients' numbers are made up, so it never sends messages."}
+	ErrCommsConsentRequired = &Error{Kind: KindConflict, Code: "comms_consent_required",
+		Message: "The patient has not consented to reminder messages. Record their consent first."}
+	ErrPatientInactive = &Error{Kind: KindConflict, Code: "patient_inactive",
+		Message: "Messages are only sent to active patients."}
+	ErrNothingDue = &Error{Kind: KindConflict, Code: "nothing_due",
+		Message: "The patient has no unanswered doses due now."}
+	ErrPracticePhoneMissing = &Error{Kind: KindConflict, Code: "practice_phone_missing",
+		Message: "Add the practice's phone number first: a recall asks the patient to phone the practice."}
+	ErrNotificationLimit = &Error{Kind: KindLimited, Code: "notification_limit_reached",
+		Message: "The practice has reached today's message limit."}
 )
+
+// notOnWhatsApp explains why a patient cannot be messaged. Only WhatsApp is
+// built, and a patient who chose SMS may have no smartphone, so they are not
+// switched silently.
+func notOnWhatsApp(p *model.Patient) error {
+	msg := "The patient has no mobile number on record."
+	switch {
+	case p.Mobile == "":
+	case p.PreferredChannel == model.ChannelNone:
+		msg = "The patient asked not to be contacted by message."
+	case p.PreferredChannel != model.ChannelWhatsApp:
+		msg = "The patient prefers " + string(p.PreferredChannel) + ", and only WhatsApp is built, so nothing was sent."
+	}
+	return &Error{Kind: KindConflict, Code: "no_whatsapp", Message: msg}
+}
+
+// clinicalDetail refuses a message that would reveal something about the
+// patient's health to whoever holds the phone.
+func clinicalDetail(err error) error {
+	return &Error{Kind: KindInvalid, Code: "clinical_detail",
+		Message: "Not sent: " + err.Error() + ". If it is the practice's name, set a neutral messaging name in the practice settings."}
+}
 
 func invalid(v model.ValidationErrors) error {
 	return &Error{Kind: KindInvalid, Code: "validation_failed", Message: "Some fields need attention.", Fields: v}

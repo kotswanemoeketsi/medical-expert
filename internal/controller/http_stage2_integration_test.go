@@ -567,14 +567,20 @@ func TestDosesAndResponses(t *testing.T) {
 		"role": "patient", "patient_id": pid, "password": adminPassword}), 201, "patient login")
 	pt := h.mustLogin(c.slug, email, adminPassword)
 
+	// With a login of her own she can answer, so the scheduler adds her
+	// regular doses too; the three added by hand are still there.
 	doses := h.expect(h.do("GET", "/api/v1/patients/"+pid+"/doses", pt, nil), 200, "own doses").body["items"].([]any)
-	if len(doses) != 3 {
-		t.Fatalf("doses: %d", len(doses))
-	}
 	byTime := map[string]string{}
+	manual := 0
 	for _, d := range doses {
 		m := d.(map[string]any)
 		byTime[m["scheduled_at"].(string)] = m["id"].(string)
+		if m["source"] == "manual" {
+			manual++
+		}
+	}
+	if manual != 3 {
+		t.Fatalf("manual doses: %d", manual)
 	}
 	due := byTime[now.Add(-time.Hour).UTC().Format("2006-01-02T15:04:05Z")]
 	later := byTime[now.Add(5*time.Hour).UTC().Format("2006-01-02T15:04:05Z")]

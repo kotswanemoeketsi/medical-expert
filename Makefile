@@ -1,14 +1,18 @@
 # Convenience targets for Linux and macOS. On Windows use .\make.ps1.
 
-.PHONY: help build test test-integration vet migrate check run
+.PHONY: help build test test-integration vet migrate check seed run
+
+SLUG ?= demo
+NAME ?= Greenside Clinic
 
 help:
-	@echo "make build              build bin/server, bin/migrate, bin/bootstrap"
+	@echo "make build              build every program into bin/"
 	@echo "make test               unit tests (no database needed)"
 	@echo "make test-integration   all tests; needs MES_TEST_DSN"
 	@echo "make vet                go vet, including integration tests"
 	@echo "make migrate            apply pending migrations"
 	@echo "make check              exit 2 if migrations are pending"
+	@echo "make seed               a demo practice of made-up patients (SLUG=demo NAME='Greenside Clinic')"
 	@echo "make run                run the API server"
 
 build:
@@ -29,6 +33,9 @@ migrate:
 
 check:
 	go run ./cmd/migrate -check
+
+seed:
+	go run ./cmd/seed -slug "$(SLUG)" -name "$(NAME)"
 
 run:
 	go run ./cmd/server

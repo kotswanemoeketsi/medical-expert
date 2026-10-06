@@ -5,6 +5,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"github.com/yourorg/medical-expert-system/internal/ai"
 	"github.com/yourorg/medical-expert-system/internal/db"
 	"github.com/yourorg/medical-expert-system/internal/model"
+	"github.com/yourorg/medical-expert-system/internal/notify"
 	"github.com/yourorg/medical-expert-system/internal/secure"
 	"github.com/yourorg/medical-expert-system/internal/service"
 )
@@ -42,6 +44,8 @@ type harness struct {
 	srv   *httptest.Server
 	reg   *service.Registry
 	clock *clock
+	db    *sql.DB
+	opts  harnessOpts
 }
 
 type harnessOpts struct {
@@ -49,6 +53,16 @@ type harnessOpts struct {
 	loginPerMinute int
 	drafter        ai.Drafter
 	aiDailyLimit   int
+	// messaging
+	sender      notify.Sender
+	phoneID     string
+	appSecret   string
+	verifyToken string
+	followUp    time.Duration
+	dailyLimit  int
+	allowDemo   bool
+	// Tests that move the clock by days keep their sessions alive.
+	sessionIdle, sessionMax time.Duration
 }
 
 func newHarness(t *testing.T, o harnessOpts) *harness {
@@ -70,7 +84,10 @@ func newHarness(t *testing.T, o harnessOpts) *harness {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg, err := service.NewRegistry(service.Deps{
 		DB: conn, Logger: quiet, Hasher: &secure.PBKDF2Hasher{Iterations: 1000}, Drafter: o.drafter,
-		Config: service.Config{RequireMFA: o.requireMFA, AIDailyLimit: o.aiDailyLimit}, Now: clk.Now,
+		Sender: o.sender, PhoneNumberID: o.phoneID, AllowDemoSends: o.allowDemo,
+		Config: service.Config{RequireMFA: o.requireMFA, AIDailyLimit: o.aiDailyLimit, FollowUpAfter: o.followUp,
+			NotificationDailyLimit: o.dailyLimit, SessionIdle: o.sessionIdle, SessionMax: o.sessionMax},
+		Now: clk.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -78,10 +95,11 @@ func newHarness(t *testing.T, o harnessOpts) *harness {
 	if o.loginPerMinute == 0 {
 		o.loginPerMinute = 10_000
 	}
-	api := New(reg, quiet, Options{LoginPerMinute: o.loginPerMinute})
+	api := New(reg, quiet, Options{LoginPerMinute: o.loginPerMinute, WhatsAppAppSecret: o.appSecret,
+		WhatsAppVerifyToken: o.verifyToken})
 	srv := httptest.NewServer(api.Handler())
 	t.Cleanup(srv.Close)
-	return &harness{t: t, srv: srv, reg: reg, clock: clk}
+	return &harness{t: t, srv: srv, reg: reg, clock: clk, db: conn, opts: o}
 }
 
 type resp struct {

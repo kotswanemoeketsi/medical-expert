@@ -110,6 +110,24 @@ func (a *API) Routes() []Route {
 		{Method: "GET", Path: "/api/v1/documents/{id}", Roles: clinicalRoles, handler: a.getDocument},
 		{Method: "POST", Path: "/api/v1/documents/{id}/issue", Roles: doctorRoles, handler: a.issueDocument},
 		{Method: "POST", Path: "/api/v1/documents/{id}/cancel", Roles: clinicalRoles, handler: a.cancelDocument},
+
+		// Practice settings, dashboard and recall lists
+		{Method: "GET", Path: "/api/v1/practice", Roles: staffRoles, handler: a.getPractice},
+		{Method: "PATCH", Path: "/api/v1/practice", Roles: adminRoles, handler: a.updatePractice},
+		{Method: "GET", Path: "/api/v1/dashboard", Roles: staffRoles, handler: a.dashboard},
+		{Method: "GET", Path: "/api/v1/recalls", Roles: staffRoles, handler: a.recalls},
+		{Method: "POST", Path: "/api/v1/maintenance/close-overdue-doses", Roles: adminRoles, handler: a.closeOverdueDoses},
+
+		// Messages
+		{Method: "POST", Path: "/api/v1/patients/{id}/notifications/reminder", Roles: clinicalRoles, handler: a.sendReminder},
+		{Method: "POST", Path: "/api/v1/patients/{id}/notifications/recall", Roles: staffRoles, handler: a.sendRecall},
+		{Method: "GET", Path: "/api/v1/patients/{id}/notifications", Roles: clinicalRoles, handler: a.patientMessages},
+		{Method: "GET", Path: "/api/v1/notifications/health", Roles: staffRoles, handler: a.messagingHealth},
+
+		// WhatsApp calls these, so they cannot require a session. The POST
+		// is verified by signature instead.
+		{Method: "GET", Path: "/api/v1/webhooks/whatsapp", Public: true, handler: a.whatsappSubscribe},
+		{Method: "POST", Path: "/api/v1/webhooks/whatsapp", Public: true, handler: a.whatsappWebhook},
 	}
 }
 

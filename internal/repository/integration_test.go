@@ -154,7 +154,7 @@ func TestScopedReadsNeverCrossTenants(t *testing.T) {
 	}
 	err = repoB.AddConsent(ctx, &model.Consent{
 		ID: model.MustNewID(), PatientID: pa.ID, Purpose: model.ConsentAIAssistedReview, Granted: true,
-		Method: model.ConsentWritten, RecordedBy: doctorB.ID, RecordedAt: now,
+		Method: model.ConsentWritten, RecordedBy: &doctorB.ID, RecordedAt: now,
 	})
 	if !errors.Is(err, ErrReference) {
 		t.Errorf("consent for another practice's patient: got %v, want ErrReference", err)
@@ -451,7 +451,7 @@ func TestConsentHistoryIsAppendOnlyAndLatestWins(t *testing.T) {
 		// Same millisecond on purpose: ordering must not depend on the clock.
 		err := repo.AddConsent(ctx, &model.Consent{ID: model.MustNewID(), PatientID: p.ID,
 			Purpose: model.ConsentAIAssistedReview, Granted: granted, Method: model.ConsentVerbal,
-			RecordedBy: doc.ID, RecordedAt: now})
+			RecordedBy: &doc.ID, RecordedAt: now})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -49,6 +49,25 @@ type Config struct {
 	AIDailyLimit    int
 
 	DefaultReviewMonths int
+
+	// WhatsApp Cloud API. Messaging is off unless both the phone number ID
+	// and the access token are set.
+	WhatsAppPhoneNumberID string
+	WhatsAppAccessToken   string
+	WhatsAppAppSecret     string
+	WhatsAppVerifyToken   string
+	WhatsAppAPIVersion    string
+	WhatsAppBaseURL       string
+	WhatsAppLanguage      string
+
+	DoseGrace              time.Duration
+	ReminderFollowUp       time.Duration // 0: no follow-up
+	NotificationDailyLimit int
+}
+
+// WhatsAppConfigured reports whether messages can be sent at all.
+func (c *Config) WhatsAppConfigured() bool {
+	return c.WhatsAppPhoneNumberID != "" && c.WhatsAppAccessToken != ""
 }
 
 func (c *Config) Production() bool { return c.Env == "production" }
@@ -90,6 +109,16 @@ func Load() (*Config, error) {
 	c.AITimeout = duration("MES_AI_TIMEOUT", 90*time.Second, &errs)
 	c.AIDailyLimit = integer("MES_AI_DAILY_LIMIT", 200, &errs)
 	c.DefaultReviewMonths = integer("MES_DEFAULT_REVIEW_MONTHS", 6, &errs)
+	c.WhatsAppPhoneNumberID = get("MES_WHATSAPP_PHONE_NUMBER_ID", "")
+	c.WhatsAppAccessToken = get("MES_WHATSAPP_ACCESS_TOKEN", "")
+	c.WhatsAppAppSecret = get("MES_WHATSAPP_APP_SECRET", "")
+	c.WhatsAppVerifyToken = get("MES_WHATSAPP_VERIFY_TOKEN", "")
+	c.WhatsAppAPIVersion = get("MES_WHATSAPP_API_VERSION", "v23.0")
+	c.WhatsAppBaseURL = get("MES_WHATSAPP_BASE_URL", "https://graph.facebook.com")
+	c.WhatsAppLanguage = get("MES_WHATSAPP_LANGUAGE", "en")
+	c.DoseGrace = duration("MES_DOSE_GRACE", 12*time.Hour, &errs)
+	c.ReminderFollowUp = durationOrOff("MES_REMINDER_FOLLOW_UP", time.Hour, &errs)
+	c.NotificationDailyLimit = integer("MES_NOTIFICATION_DAILY_LIMIT", 1000, &errs)
 
 	switch strings.ToLower(get("MES_LOG_LEVEL", "info")) {
 	case "debug":
@@ -121,6 +150,18 @@ func Load() (*Config, error) {
 	if c.DefaultReviewMonths < 1 || c.DefaultReviewMonths > 24 {
 		errs = append(errs, "MES_DEFAULT_REVIEW_MONTHS must be between 1 and 24")
 	}
+	if (c.WhatsAppPhoneNumberID == "") != (c.WhatsAppAccessToken == "") {
+		errs = append(errs, "MES_WHATSAPP_PHONE_NUMBER_ID and MES_WHATSAPP_ACCESS_TOKEN must be set together")
+	}
+	if c.DoseGrace < time.Hour || c.DoseGrace > 72*time.Hour {
+		errs = append(errs, "MES_DOSE_GRACE must be between 1h and 72h")
+	}
+	if c.ReminderFollowUp > 0 && (c.ReminderFollowUp < 10*time.Minute || c.ReminderFollowUp > 12*time.Hour) {
+		errs = append(errs, "MES_REMINDER_FOLLOW_UP must be off, or between 10m and 12h")
+	}
+	if c.NotificationDailyLimit < 1 {
+		errs = append(errs, "MES_NOTIFICATION_DAILY_LIMIT must be at least 1")
+	}
 	if len(errs) > 0 {
 		return nil, errors.New("configuration: " + strings.Join(errs, "; "))
 	}
@@ -146,6 +187,12 @@ func (c *Config) Validate() error {
 	}
 	if c.AnthropicAPIKey != "" && !strings.HasPrefix(c.AIBaseURL, "https://") {
 		errs = append(errs, "MES_AI_BASE_URL must use https in production: dictations are patient data")
+	}
+	if c.WhatsAppConfigured() && c.WhatsAppAppSecret == "" {
+		errs = append(errs, "MES_WHATSAPP_APP_SECRET is required when WhatsApp is configured: without it patients' replies cannot be verified")
+	}
+	if c.WhatsAppConfigured() && !strings.HasPrefix(c.WhatsAppBaseURL, "https://") {
+		errs = append(errs, "MES_WHATSAPP_BASE_URL must use https in production: messages carry patients' names and numbers")
 	}
 	if cfg, err := mysql.ParseDSN(c.DSN); err == nil && strings.EqualFold(cfg.User, "root") {
 		errs = append(errs, "MES_DSN must not use the root account in production; create an application user")
@@ -174,6 +221,17 @@ func duration(name string, def time.Duration, errs *[]string) time.Duration {
 		return def
 	}
 	return d
+}
+
+// durationOrOff is duration, with 0 or "off" meaning none.
+func durationOrOff(name string, def time.Duration, errs *[]string) time.Duration {
+	switch strings.ToLower(get(name, "")) {
+	case "":
+		return def
+	case "0", "off", "none", "false":
+		return 0
+	}
+	return duration(name, def, errs)
 }
 
 func integer(name string, def int, errs *[]string) int {

@@ -54,11 +54,14 @@ func TestProductionDefaultsAreSafe(t *testing.T) {
 
 func TestProductionRefusesWeakSettings(t *testing.T) {
 	cases := map[string]map[string]string{
-		"MFA off":              {"MES_REQUIRE_MFA": "false"},
-		"long session":         {"MES_SESSION_MAX": "48h"},
-		"long idle":            {"MES_SESSION_IDLE": "2h", "MES_SESSION_MAX": "12h"},
-		"root database access": {"MES_DSN": "root:pw@tcp(db:3306)/mes"},
-		"AI over plain http":   {"ANTHROPIC_API_KEY": "k", "MES_AI_BASE_URL": "http://proxy.local"},
+		"MFA off":                        {"MES_REQUIRE_MFA": "false"},
+		"long session":                   {"MES_SESSION_MAX": "48h"},
+		"long idle":                      {"MES_SESSION_IDLE": "2h", "MES_SESSION_MAX": "12h"},
+		"root database access":           {"MES_DSN": "root:pw@tcp(db:3306)/mes"},
+		"AI over plain http":             {"ANTHROPIC_API_KEY": "k", "MES_AI_BASE_URL": "http://proxy.local"},
+		"WhatsApp without an app secret": {"MES_WHATSAPP_PHONE_NUMBER_ID": "1098765", "MES_WHATSAPP_ACCESS_TOKEN": "t"},
+		"WhatsApp over plain http": {"MES_WHATSAPP_PHONE_NUMBER_ID": "1098765", "MES_WHATSAPP_ACCESS_TOKEN": "t",
+			"MES_WHATSAPP_APP_SECRET": "s", "MES_WHATSAPP_BASE_URL": "http://graph.local"},
 	}
 	for name, vars := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -76,6 +79,34 @@ func TestProductionRefusesWeakSettings(t *testing.T) {
 				t.Fatalf("production accepted %s", name)
 			}
 		})
+	}
+}
+
+func TestMessagingSettings(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("MES_DSN", "mes:pw@tcp(127.0.0.1:3306)/mes")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.WhatsAppConfigured() || c.DoseGrace != 12*time.Hour || c.ReminderFollowUp != time.Hour ||
+		c.NotificationDailyLimit != 1000 || c.WhatsAppAPIVersion != "v23.0" || c.WhatsAppLanguage != "en" {
+		t.Fatalf("messaging defaults: %+v", c)
+	}
+	t.Setenv("MES_REMINDER_FOLLOW_UP", "off")
+	t.Setenv("MES_WHATSAPP_PHONE_NUMBER_ID", "1098765")
+	t.Setenv("MES_WHATSAPP_ACCESS_TOKEN", "EAAG")
+	if c, err = Load(); err != nil || c.ReminderFollowUp != 0 || !c.WhatsAppConfigured() {
+		t.Fatalf("follow-up off and WhatsApp on: %+v %v", c, err)
+	}
+	t.Setenv("MES_WHATSAPP_ACCESS_TOKEN", "")
+	t.Setenv("MES_REMINDER_FOLLOW_UP", "2m")
+	t.Setenv("MES_DOSE_GRACE", "30m")
+	_, err = Load()
+	for _, want := range []string{"set together", "MES_REMINDER_FOLLOW_UP", "MES_DOSE_GRACE"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("expected %q in %v", want, err)
+		}
 	}
 }
 

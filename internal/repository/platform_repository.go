@@ -1,8 +1,9 @@
 package repository
 
 // UNSCOPED BY DESIGN. This file holds a raw *sql.DB because its job comes
-// before a tenant scope can exist: finding the practice a login names, and
-// resolving a bearer token to the tenant it belongs to. It returns
+// before a tenant scope can exist: finding the practice a login names,
+// resolving a bearer token to the tenant it belongs to, and working out
+// which practice a WhatsApp receipt or reply belongs to. It returns
 // identifiers and practice details, never patient data.
 //
 // Statements here run on the raw handle with no binder, so the ":tenant"
@@ -11,6 +12,8 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/yourorg/medical-expert-system/internal/model"
@@ -45,17 +48,33 @@ func (r *PlatformRepository) CreateTenant(ctx context.Context, tx *sql.Tx, t *mo
 	return translate(err)
 }
 
-const tenantColumns = `id, slug, name, status, timezone, practice_number, address, phone, email, created_at, updated_at`
+const tenantColumns = `id, slug, name, status, timezone, practice_number, address, phone, email, settings_json,
+       created_at, updated_at`
 
 func scanTenant(sc scanner) (*model.Tenant, error) {
 	var t model.Tenant
 	var practiceNo, address, phone, email sql.Null[string]
+	var settings []byte
 	if err := sc.Scan(&t.ID, &t.Slug, &t.Name, &t.Status, &t.Timezone,
-		&practiceNo, &address, &phone, &email, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		&practiceNo, &address, &phone, &email, &settings, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, translate(err)
 	}
 	t.PracticeNumber, t.Address, t.Phone, t.Email = practiceNo.V, address.V, phone.V, email.V
+	if err := decodeSettings(settings, &t.Settings); err != nil {
+		return nil, err
+	}
 	return &t, nil
+}
+
+// decodeSettings reads settings_json. NULL and {} both mean every default.
+func decodeSettings(raw []byte, into *model.PracticeSettings) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(raw, into); err != nil {
+		return fmt.Errorf("repository: practice settings are not valid JSON: %w", err)
+	}
+	return nil
 }
 
 const selectTenantBySlug = `SELECT ` + tenantColumns + ` FROM tenants WHERE slug = ?`
@@ -79,6 +98,27 @@ func (r *PlatformRepository) SetTenantStatus(ctx context.Context, id model.ID, s
 }
 
 const selectActiveTenantIDs = `SELECT id FROM tenants WHERE status = 'active' ORDER BY id`
+
+const selectActiveTenants = `SELECT ` + tenantColumns + ` FROM tenants WHERE status = 'active' ORDER BY id`
+
+// ActiveTenants lists practices, with their settings, for jobs that depend
+// on them.
+func (r *PlatformRepository) ActiveTenants(ctx context.Context) ([]model.Tenant, error) {
+	rows, err := r.db.QueryContext(ctx, selectActiveTenants)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Tenant
+	for rows.Next() {
+		t, err := scanTenant(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *t)
+	}
+	return out, rows.Err()
+}
 
 // ActiveTenantIDs lists practices for per-tenant maintenance jobs.
 func (r *PlatformRepository) ActiveTenantIDs(ctx context.Context) ([]model.ID, error) {
@@ -169,6 +209,56 @@ func (r *PlatformRepository) PurgeSessions(ctx context.Context, cutoff time.Time
 }
 
 // ---------------------------------------------------------------------------
+// WhatsApp webhooks. A delivery receipt or a patient's reply arrives with no
+// session, so which practice it belongs to has to be worked out before a
+// scope can exist — from the message it refers to. These return identifiers
+// only; everything else is read through the practice's own scope.
+// ---------------------------------------------------------------------------
+
+// NotificationRef identifies a message and the practice that sent it.
+type NotificationRef struct {
+	TenantID       model.ID
+	NotificationID model.ID
+}
+
+const selectNotificationByReplyToken = `SELECT tenant_id, id FROM notifications WHERE reply_token = ?`
+
+const selectNotificationByProviderID = `SELECT tenant_id, id FROM notifications WHERE provider_message_id = ?`
+
+// The latest message that reached a number, for a reply that names nothing
+// else: typed text rather than a button, and not a swipe-reply.
+const selectLatestNotificationTo = `
+SELECT tenant_id, id FROM notifications
+ WHERE destination = ? AND created_at >= ? AND status IN ('sent', 'delivered', 'read')
+ ORDER BY created_at DESC, id
+ LIMIT 1`
+
+func (r *PlatformRepository) scanRef(row *sql.Row) (*NotificationRef, error) {
+	var ref NotificationRef
+	if err := row.Scan(&ref.TenantID, &ref.NotificationID); err != nil {
+		return nil, translate(err)
+	}
+	return &ref, nil
+}
+
+// NotificationByReplyToken finds the message whose button was pressed.
+func (r *PlatformRepository) NotificationByReplyToken(ctx context.Context, token string) (*NotificationRef, error) {
+	return r.scanRef(r.db.QueryRowContext(ctx, selectNotificationByReplyToken, token))
+}
+
+// NotificationByProviderID finds a message by the provider's ID, for a
+// receipt or a swipe-reply.
+func (r *PlatformRepository) NotificationByProviderID(ctx context.Context, providerID string) (*NotificationRef, error) {
+	return r.scanRef(r.db.QueryRowContext(ctx, selectNotificationByProviderID, providerID))
+}
+
+// LatestNotificationTo finds the most recent message that reached a number
+// since a moment.
+func (r *PlatformRepository) LatestNotificationTo(ctx context.Context, destination string, since time.Time) (*NotificationRef, error) {
+	return r.scanRef(r.db.QueryRowContext(ctx, selectLatestNotificationTo, destination, since.UTC()))
+}
+
+// ---------------------------------------------------------------------------
 // Shared reference data: the medication catalogue (BR-0.10). Not tenant data
 // — every practice reads the same list — so it lives with the other
 // platform-level statements. Tenant-scoped statements may still join it.
@@ -229,6 +319,30 @@ func (r *PlatformRepository) SearchMedications(ctx context.Context, q string, li
 			return nil, err
 		}
 		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+const selectMedicationNames = `
+SELECT generic_name FROM medications
+ UNION
+SELECT brand_name FROM medications WHERE brand_name <> ''`
+
+// MedicationNames lists every generic and brand name in the catalogue, so a
+// message can be checked for them before it goes out.
+func (r *PlatformRepository) MedicationNames(ctx context.Context) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx, selectMedicationNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
 	}
 	return out, rows.Err()
 }

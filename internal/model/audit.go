@@ -85,6 +85,20 @@ const (
 	ActionDocumentIssued    = "document.issued"
 	ActionDocumentCancelled = "document.cancelled"
 	ActionDocumentRead      = "document.read"
+
+	ActionPracticeUpdated = "practice.updated"
+
+	ActionNotificationQueued  = "notification.queued"
+	ActionNotificationSent    = "notification.sent"
+	ActionNotificationFailed  = "notification.failed"
+	ActionNotificationRefused = "notification.refused"
+	ActionNotificationsRead   = "notification.read"
+	ActionReplyReceived       = "notification.reply_received"
+
+	ActionDosesMissed = "dose.missed"
+
+	ActionRecallListRead = "recall.read"
+	ActionDashboardRead  = "dashboard.read"
 )
 
 // AuditEntry is one row of the audit log (BR-8.1, BR-8.2).

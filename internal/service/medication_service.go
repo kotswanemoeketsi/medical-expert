@@ -103,6 +103,7 @@ func (s *MedicationService) CreateRegimen(ctx context.Context, patientID model.I
 	s.recordWrite(ctx, model.AuditEntry{Action: model.ActionRegimenCreated, Outcome: model.OutcomeSuccess,
 		SubjectType: "patient", SubjectID: idp(patientID),
 		Metadata: map[string]any{"regimen_id": g.ID.String(), "medication": g.MedicationName, "frequency": string(g.Frequency)}})
+	s.refreshSchedule(ctx, patientID)
 	return g, nil
 }
 
@@ -125,7 +126,9 @@ func (s *MedicationService) Regimens(ctx context.Context, patientID model.ID) ([
 }
 
 // SetRegimenStatus pauses, resumes, stops or completes a regimen, recording
-// who and why (BR-4.10). Stopped and completed are final.
+// who and why (BR-4.10). Stopped and completed are final. Reminders adjust
+// at once: a regimen that stops being active loses its future doses in the
+// same transaction, and one resumed is scheduled again straight away.
 func (s *MedicationService) SetRegimenStatus(ctx context.Context, id model.ID, status model.RegimenStatus, reason string) (*model.Regimen, error) {
 	if err := s.requireDoctor(); err != nil {
 		return nil, err
@@ -150,7 +153,8 @@ func (s *MedicationService) SetRegimenStatus(ctx context.Context, id model.ID, s
 		return nil, ErrRegimenState
 	}
 	now := s.now()
-	if err := repo.SetStatus(ctx, id, g.Status, status, reason, s.actor.UserID, now); err != nil {
+	withdrawn, err := repo.SetStatusAndWithdraw(ctx, id, g.Status, status, reason, s.actor.UserID, now)
+	if err != nil {
 		if errors.Is(err, repository.ErrConflict) {
 			return nil, ErrRegimenState
 		}
@@ -158,13 +162,16 @@ func (s *MedicationService) SetRegimenStatus(ctx context.Context, id model.ID, s
 	}
 	s.recordWrite(ctx, model.AuditEntry{Action: model.ActionRegimenStatusChanged, Outcome: model.OutcomeSuccess,
 		SubjectType: "patient", SubjectID: idp(g.PatientID), Reason: reason,
-		Metadata: map[string]any{"regimen_id": id.String(), "from": string(g.Status), "to": string(status)}})
+		Metadata: map[string]any{"regimen_id": id.String(), "from": string(g.Status), "to": string(status), "doses_withdrawn": withdrawn}})
+	if status == model.RegimenActive {
+		s.refreshSchedule(ctx, g.PatientID)
+	}
 	return repo.Get(ctx, id)
 }
 
-// ScheduleDoses adds pending doses to an active regimen. This is the manual
-// stand-in for a scheduler that generates doses from the frequency and the
-// patient's waking hours (BR-4.2), which is not built yet.
+// ScheduleDoses adds pending doses to an active regimen by hand, for a
+// schedule the frequencies do not cover, such as a tapering dose. The
+// scheduler generates the usual ones (BR-4.2) and never touches these.
 func (s *MedicationService) ScheduleDoses(ctx context.Context, regimenID model.ID, times []time.Time) (int, error) {
 	if err := s.requireClinical(); err != nil {
 		return 0, err
